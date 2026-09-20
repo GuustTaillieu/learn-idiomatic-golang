@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0013: Pipeline Concurrency & Preventing "Half-Done" Work</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0013: Pipeline Concurrency & Preventing "Half-Done" Work</h1>
+  <p><em>Target: Learn how senior Go engineers fan-out parallel tasks, handle partial failures, and guarantee data consistency.</em></p>
+
+  <div class="callout">
+    <strong>Milestone:</strong> You assembled <code>cmd/server/main.go</code>! Your server starts, manages workers, routes requests, and handles OS interrupts. Now we take this system from a working prototype to an enterprise-grade production architecture.
+  </div>
+
+  <h2>1. Quick Senior Review of your <code>main.go</code></h2>
+  <p>In <code>cmd/server/main.go</code>, you wrote:</p>
+  <pre><code>ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+// ...
+case <-ctx.Done():
+    srv.Shutdown(ctx) // ⚠️ Look closely at ctx!</code></pre>
+  <p><strong>The Gotcha:</strong> When the user hits <code>Ctrl+C</code>, <code>ctx</code> is <em>already cancelled</em>! If you pass an already-cancelled context to <code>srv.Shutdown(ctx)</code>, the HTTP server aborts instantly instead of waiting for active requests to finish.</p>
+  <p><strong>The Fix:</strong> Create a fresh context with a grace timeout for teardown:</p>
+  <pre><code>shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+_ = srv.Shutdown(shutdownCtx)</code></pre>
+
+  <h2>2. Answering Your Questions: Real-World Architecture</h2>
+
+  <h3>A. Can an order trigger multiple processors at once?</h3>
+  <p><strong>Yes! This is called Fan-Out Concurrency.</strong></p>
+  <p>When an order arrives, we want to run independent tasks in parallel:</p>
+  <ul>
+    <li><strong>Step 1 (Sequential):</strong> Reserve Stock & Charge Payment.</li>
+    <li><strong>Step 2 (Parallel Fan-Out):</strong> Once payment is secured:
+      <ul>
+        <li>Worker Goroutine 1: Generate PDF receipt.</li>
+        <li>Worker Goroutine 2: Send confirmation email.</li>
+        <li>Worker Goroutine 3: Notify warehouse packing system.</li>
+      </ul>
+    </li>
+  </ul>
+  <p>How do we run these in Go? We can compose multiple <code>Processor</code> implementations inside a <strong>Composite Processor</strong> using goroutines and a <code>sync.WaitGroup</code>!</p>
+
+  <h3>B. "Can a mutex prevent an item from being out-of-stock?"</h3>
+  <p><strong>No, and this is a vital senior distinction:</strong></p>
+  <ul>
+    <li>A <strong>Mutex</strong> only protects memory inside a single running Go process in RAM.</li>
+    <li>If you run 2 instances of your server in Docker/Kubernetes, Server A's mutex knows <em>nothing</em> about Server B!</li>
+  </ul>
+  <p>To prevent race conditions on shared data across servers, the source of truth must be the <strong>Database</strong>:</p>
+  <ol>
+    <li><strong>Atomic SQL Transactions (ACID):</strong> In SQLite or PostgreSQL, you execute:
+      <pre><code>BEGIN TRANSACTION;
+UPDATE inventory SET stock = stock - 1 WHERE item_id = 42 AND stock > 0;
+-- If 0 rows updated, stock ran out! Rollback!
+ROLLBACK;</code></pre>
+    </li>
+    <li><strong>Compensating Actions (The Saga Pattern):</strong> If credit card payment fails after inventory was reserved, your worker executes a compensating step: <code>inventory.Release(orderID)</code> so the stock is restored!</li>
+  </ol>
+
+  <h3>C. "How do we make sure an order is never lost?"</h3>
+  <p>You mentioned your experience with .NET, SQLite, and Kafka. That industry pattern is called the <strong>Transactional Outbox Pattern</strong>!</p>
+  <p>If your server crashes right between saving the order in the database and putting it onto the channel, the order is lost. With the Outbox pattern, you save both the order AND an outbox message inside the <strong>same database transaction</strong>. When the service reboots, it reads pending outbox messages and resumes processing. Nothing is ever lost!</p>
+
+  <h2>3. The Senior Roadmap Ahead</h2>
+  <ol>
+    <li><strong>Phase 2A (Next):</strong> Multi-Processor Pipeline (Composite Processor with Parallel Fan-Out).</li>
+    <li><strong>Phase 2B:</strong> Real Database Storage with <code>database/sql</code> & SQLite (Replacing in-memory map with ACID SQL transactions).</li>
+    <li><strong>Phase 2C:</strong> Transactional Outbox & Reliable Resumption.</li>
+  </ol>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build a Composite Processor</h3>
+    <p>Let's make our processing pipeline modular by applying the <em>Composite Pattern</em>:</p>
+    <ol>
+      <li>First, apply the small <code>shutdownCtx</code> fix in <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>.</li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/task.go"><code>internal/queue/task.go</code></a> or a new file:
+        <ul>
+          <li>Create a <code>MultiProcessor</code> struct that holds a slice of processors:
+            <pre><code>type MultiProcessor struct {
+    processors []Processor
+}
+
+func NewMultiProcessor(processors ...Processor) *MultiProcessor {
+    return &MultiProcessor{processors: processors}
+}</code></pre>
+          </li>
+          <li>Implement <code>Process(ctx context.Context, payload string) error</code>:
+            Loop through all processors and run them. If any processor returns an error, stop and return that error!
+          </li>
+        </ul>
+      </li>
+      <li>Test it with multiple processors in <code>queue_test.go</code> (e.g. an InventoryProcessor and an EmailProcessor)!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0012-the-final-assembly-cmd-server-and-os-signals.html">Previous: Lesson 0012</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

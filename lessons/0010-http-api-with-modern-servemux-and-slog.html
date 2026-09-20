@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0010: Exposing HTTP Endpoints with Modern ServeMux & slog</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0010: Exposing HTTP Endpoints with Modern <code>ServeMux</code> & <code>slog</code></h1>
+  <p><em>Target: Build a clean REST API in <code>internal/httpapi</code> to let real clients submit and query tasks over HTTP.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Reached:</strong> <code>package queue_test</code> solved the import cycle cleanly! The entire test suite runs with <code>go test -v -race ./...</code> and passes in milliseconds.
+  </div>
+
+  <h2>1. Connecting to the Real World: The HTTP Layer</h2>
+  <p>We have an asynchronous worker engine (<code>internal/queue</code>) and a persistent state repository (<code>internal/store</code>). Now, we need the front door of our application: <strong>HTTP Endpoints</strong>.</p>
+  <p>In our e-commerce checkout flow:</p>
+  <ul>
+    <li><strong><code>POST /tasks</code>:</strong> The checkout page sends an order. We save it as <code>StatusPending</code>, submit it to our queue, and immediately respond with <code>HTTP 202 Accepted</code>:
+      <pre><code>{
+  "id": "7b8f9e12-...",
+  "status": "PENDING"
+}</code></pre>
+    </li>
+    <li><strong><code>GET /tasks/{id}</code>:</strong> The customer's order tracking page polls for progress. We read from our store and return the current status (<code>PENDING</code>, <code>RUNNING</code>, <code>COMPLETED</code>, or <code>FAILED</code>). If it doesn't exist, we return <code>HTTP 404 Not Found</code>.</li>
+  </ul>
+
+  <h2>2. Modern Go Standard Library Routing (Go 1.22+)</h2>
+  <p>Prior to Go 1.22, developers had to use third-party routers like Chi or Gorilla Mux to match methods and URL parameters. In modern Go, the standard library <code>http.ServeMux</code> supports this natively:</p>
+  <pre><code>mux := http.NewServeMux()
+
+// Match method and path
+mux.HandleFunc("POST /tasks", handler.handleCreateTask)
+
+// Extract path parameter: {id}
+mux.HandleFunc("GET /tasks/{id}", handler.handleGetTask)
+
+// Inside the handler:
+func (h *Handler) handleGetTask(w http.ResponseWriter, r *http.Request) {
+    id := r.PathValue("id") // Built-in parameter extraction!
+}</code></pre>
+
+  <h2>3. Senior Go HTTP Idioms</h2>
+  <ul>
+    <li><strong>Decode JSON from the stream:</strong>
+      <pre><code>var req struct { Payload string `json:"payload"` }
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    http.Error(w, "invalid request body", http.StatusBadRequest)
+    return
+}</code></pre>
+    </li>
+    <li><strong>Return JSON with correct headers:</strong>
+      <pre><code>w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusAccepted)
+json.NewEncoder(w).Encode(task)</code></pre>
+    </li>
+    <li><strong>Structured Logging (<code>log/slog</code>):</strong>
+      <pre><code>slog.InfoContext(r.Context(), "task submitted", "task_id", task.ID)</code></pre>
+    </li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build <code>internal/httpapi</code></h3>
+    <ol>
+      <li>Create directory: <code>internal/httpapi/</code>.</li>
+      <li>Create <code>internal/httpapi/handler.go</code>:
+        <ul>
+          <li>Define what <code>Handler</code> needs. Following our <em>consumer-defined interface</em> rule:
+            <pre><code>type Queue interface {
+    Submit(ctx context.Context, task *queue.Task) error
+}
+
+type Store interface {
+    Get(ctx context.Context, id string) (*queue.Task, error)
+}
+
+type Handler struct {
+    queue Queue
+    store Store
+}</code></pre>
+          </li>
+          <li>Implement <code>Routes() http.Handler</code> returning a configured <code>*http.ServeMux</code> with:
+            <ul>
+              <li><code>POST /tasks</code></li>
+              <li><code>GET /tasks/{id}</code></li>
+            </ul>
+          </li>
+          <li>Implement <code>handleCreateTask</code> and <code>handleGetTask</code>.</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0009-black-box-testing-and-test-cycles.html">Previous: Lesson 0009</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

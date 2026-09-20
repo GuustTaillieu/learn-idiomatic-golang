@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0001: Channels, Mutexes, and your first Submit method</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0001: Channels, Mutexes, and the <code>Submit</code> Method</h1>
+  <p><em>Target: Master why and how we protect state and enqueue work in Go.</em></p>
+
+  <div class="callout">
+    <strong>Mission Link:</strong> Building our Concurrent Task Queue Service (<a href="../MISSION.md">MISSION.md</a>). You already wrote the struct in <code>internal/queue/queue.go</code>! Now we implement the method that accepts tasks.
+  </div>
+
+  <h2>1. Mental Model: What is the Mutex actually protecting?</h2>
+  <p>You asked: <em>"the basic usecase of a mutex is to prevent race conditions (i think right?)"</em></p>
+  <p><strong>Yes, exactly!</strong> But specifically: a mutex protects <strong>shared memory access</strong>. In our <code>Queue</code> struct, we have:</p>
+  <pre><code>type Queue struct {
+    mu     sync.RWMutex
+    closed bool
+    tasks  chan Task
+    // ...
+}</code></pre>
+  <p>Here is the critical insight: <strong>Channels are already concurrency-safe internally!</strong> You do <em>not</em> need a mutex to send to or receive from a channel.</p>
+  <p>So why do we have <code>mu sync.RWMutex</code> here?</p>
+  <p>Because of <code>q.closed</code>! If one goroutine calls <code>Shutdown()</code> (which writes <code>q.closed = true</code>) while another goroutine is calling <code>Submit()</code> (which reads <code>if q.closed</code>), that simultaneous read and write is a <strong>data race</strong>. Go's runtime will detect this and crash if run with <code>-race</code>.</p>
+  <p>Furthermore, in Go, <strong>sending to a closed channel causes a panic</strong>! So checking whether the queue is closed before accepting work is essential.</p>
+
+  <h2>2. Why <code>sync.RWMutex</code> instead of <code>sync.Mutex</code>?</h2>
+  <p>A normal <code>Mutex</code> allows only 1 reader OR 1 writer at any time. But <code>Submit()</code> only <em>reads</em> <code>q.closed</code> — it does not change it. Many goroutines should be allowed to submit tasks at the exact same moment.</p>
+  <ul>
+    <li><code>q.mu.RLock()</code> and <code>defer q.mu.RUnlock()</code>: Multiple goroutines can hold a read lock at once.</li>
+    <li>When shutting down later, <code>q.mu.Lock()</code> will wait until all active submissions are done, then exclusively flip <code>closed = true</code>.</li>
+  </ul>
+
+  <h2>3. Enqueuing Work: The Channel & The Context</h2>
+  <p>In senior Go, any operation that can block or take time takes <code>ctx context.Context</code> as its first parameter:</p>
+  <pre><code>func (q *Queue) Submit(ctx context.Context, task Task) error</code></pre>
+  <p>Why? What if our channel buffer (size 100) is completely full? In Go, <code>q.tasks <- task</code> will <strong>block</strong> until a worker reads a task. But what if the caller wants to abort if it takes more than 500ms, or if the client disconnects?</p>
+  <p>This is where the <code>select</code> statement shines:</p>
+  <pre><code>select {
+case q.tasks <- task:
+    // Success: task enqueued!
+case <-ctx.Done():
+    // Caller gave up or timed out!
+}</code></pre>
+
+  <h2>Recommended Primary Reading</h2>
+  <p>Read William Kennedy's breakdown on channel mechanics: <a href="https://github.com/ardanlabs/gotraining">ardanlabs/gotraining: Concurrency & Channels</a>.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Finish <code>Submit</code> in <code>internal/queue/queue.go</code></h3>
+    <p>Open <code>internal/queue/queue.go</code> and implement <code>Submit</code> yourself using these handles:</p>
+    <ol>
+      <li>Update the method signature to accept <code>ctx context.Context</code> as the first argument: <code>func (q *Queue) Submit(ctx context.Context, task Task) error</code>.</li>
+      <li>Acquire a read-lock on <code>q.mu</code> and ensure it unlocks when the function exits (hint: use <code>defer</code>).</li>
+      <li>Check if <code>q.closed</code> is true. If it is, return <code>ErrQueueClosed</code> (which you already declared in <code>task.go</code>!).</li>
+      <li>Use a <code>select</code> statement to either:
+        <ul>
+          <li>Send <code>task</code> to <code>q.tasks</code> and return <code>nil</code>.</li>
+          <li>Or, if <code>ctx.Done()</code> receives a signal, return an error wrapping <code>ctx.Err()</code> using <code>fmt.Errorf("...: %w", ctx.Err())</code>.</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <p><em>Stuck on any syntax or concept? Ask me! I'm here to pair-program and teach you every step of the way.</em></p>
+
+  <div class="footer">
+    <p>Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">0001-concurrency-primitives-cheat-sheet.html</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

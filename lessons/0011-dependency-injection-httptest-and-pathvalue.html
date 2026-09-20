@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0011: HTTP Dependency Injection, PathValue, & httptest</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0011: HTTP Dependency Injection, <code>PathValue</code>, & <code>httptest</code></h1>
+  <p><em>Target: Refine your HTTP handlers with clean dependency injection, native routing, and lightning-fast tests with <code>net/http/httptest</code>.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your <code>internal/httpapi/handler.go</code>:</strong>
+    <ul>
+      <li>✅ <strong>Streaming JSON:</strong> You used <code>json.NewDecoder(r.Body).Decode(&req)</code> and <code>json.NewEncoder(w).Encode(task)</code>. That avoids reading entire payloads into temporary memory buffers!</li>
+      <li>✅ <strong>Structured Logging:</strong> You used standard library <code>log/slog</code> with key-value pairs (<code>"task_id", task.ID</code>).</li>
+      <li>✅ <strong>HTTP Status Codes:</strong> Proper usage of <code>http.StatusBadRequest</code>, <code>http.StatusNotFound</code>, and <code>http.StatusOK</code>.</li>
+    </ul>
+  </div>
+
+  <h2>1. Refinement #1: Use Native <code>r.PathValue("id")</code></h2>
+  <p>In <code>handleGetTask</code>, you wrote:</p>
+  <pre><code>id := r.URL.Path[len("/tasks/"):] // ⚠️ Fragile string slicing</code></pre>
+  <p>Because you registered the route with <code>mux.HandleFunc("GET /tasks/{id}", ...)</code>, Go 1.22+ gives you a built-in extractor:</p>
+  <pre><code>id := r.PathValue("id") // ✅ Safe, clean, standard!</code></pre>
+  <p>It handles trailing slashes and path normalization automatically.</p>
+
+  <h2>2. Refinement #2: True Dependency Injection</h2>
+  <p>Currently, your <code>NewHandler</code> instantiates concrete objects inside itself:</p>
+  <pre><code>func NewHandler() *Handler {
+    p := processor.NewMockProcessor()
+    s := store.NewMemoryStore()
+    return &Handler{
+        queue: queue.NewQueue(p, s),
+        store: s,
+    }
+}</code></pre>
+  <p>Notice you already defined beautiful interfaces at the top:</p>
+  <pre><code>type Queue interface {
+    Submit(ctx context.Context, task *queue.Task) error
+}
+
+type Store interface {
+    Save(ctx context.Context, task *queue.Task) error
+    Get(ctx context.Context, id string) (*queue.Task, error)
+}</code></pre>
+  <p>In senior Go, <code>Handler</code> should receive its dependencies from the outside:</p>
+  <pre><code>func NewHandler(queue Queue, store Store) *Handler {
+    return &Handler{queue: queue, store: store}
+}
+
+func (h *Handler) Routes() http.Handler {
+    mux := http.NewServeMux()
+    mux.HandleFunc("POST /tasks", h.handleCreateTask)
+    mux.HandleFunc("GET /tasks/{id}", h.handleGetTask)
+    return mux
+}</code></pre>
+  <p><strong>Why?</strong> This allows <code>cmd/server/main.go</code> to pass the real production worker queue, while our tests can pass mock or test queues effortlessly.</p>
+
+  <h2>3. Refinement #3: The "Pending" State Race Condition</h2>
+  <p>In <code>handleCreateTask</code>, you create the task and submit it:</p>
+  <pre><code>task := queue.NewTask(req.Payload)
+h.queue.Submit(r.Context(), task)</code></pre>
+  <p><strong>The Catch:</strong> What if the customer's browser calls <code>GET /tasks/{id}</code> right away, while the task is still waiting in the channel buffer? The worker hasn't picked it up yet, so the task isn't in the store! The customer gets a false <code>404 Not Found</code>.</p>
+  <p><strong>The Fix:</strong> Save the task in the store (as <code>StatusPending</code>) <em>before</em> or right when submitting:</p>
+  <pre><code>task := queue.NewTask(req.Payload)
+if err := h.store.Save(r.Context(), task); err != nil {
+    http.Error(w, "failed to save task", http.StatusInternalServerError)
+    return
+}
+if err := h.queue.Submit(r.Context(), task); err != nil {
+    // ...
+}</code></pre>
+
+  <h2>4. Testing HTTP with <code>net/http/httptest</code></h2>
+  <p>In Go, you don't need to boot a real TCP server to test HTTP handlers! <code>httptest.NewRecorder()</code> acts as an in-memory <code>http.ResponseWriter</code>:</p>
+  <pre><code>req := httptest.NewRequest("GET", "/tasks/123", nil)
+rec := httptest.NewRecorder()
+
+handler.Routes().ServeHTTP(rec, req)
+
+if rec.Code != http.StatusOK { ... }</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Update <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handler.go"><code>internal/httpapi/handler.go</code></a>:
+        <ul>
+          <li>Change <code>NewHandler</code> to accept <code>(queue Queue, store Store)</code>.</li>
+          <li>Make <code>Routes</code> a method on <code>*Handler</code>: <code>func (h *Handler) Routes() http.Handler</code>.</li>
+          <li>Add <code>Save</code> to the local <code>Store</code> interface, and save the task in <code>handleCreateTask</code> before enqueuing.</li>
+          <li>Use <code>r.PathValue("id")</code> in <code>handleGetTask</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handler_test.go"><code>internal/httpapi/handler_test.go</code></a>:
+        <ul>
+          <li>Use <code>httptest.NewRequest</code> and <code>httptest.NewRecorder</code> to test <code>POST /tasks</code> and <code>GET /tasks/{id}</code>.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/httpapi</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0010-http-api-with-modern-servemux-and-slog.html">Previous: Lesson 0010</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

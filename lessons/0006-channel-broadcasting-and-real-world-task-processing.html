@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0006: Channel Broadcasting & Real-World Task Processing</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0006: Channel Broadcasting & Real-World Domain Logic</h1>
+  <p><em>Target: Master channel broadcast mechanics and connect our queue to a realistic production use case.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Corrections:</strong>
+    <ul>
+      <li>✅ <strong>Pointer Semantics:</strong> You switched to <code>*Task</code> across <code>tasks chan *Task</code> and <code>Submit(ctx, task *Task)</code>. Now calling <code>q.Submit(ctx, NewTask(...))</code> is clean and direct without ugly dereferencing!</li>
+      <li>✅ <strong>Zero-Value Idiom:</strong> You cleaned up <code>NewQueue</code> by letting Go zero-initialize the mutex, waitgroup, and closed flag automatically.</li>
+      <li>⚠️ <strong>The <code>stopChan</code> Trap:</strong> You added <code>stopChan</code>, but encountered a classic Go concurrency puzzle! Let's examine it.</li>
+    </ul>
+  </div>
+
+  <h2>1. Deep Dive: Why <code>ch <- struct{}{}</code> Hangs (1-to-1 vs Broadcast)</h2>
+  <p>In <code>Stop()</code>, you wrote:</p>
+  <pre><code>q.stopChan <- struct{}{} // ❌ Can deadlock!</code></pre>
+  <p><code>stopChan</code> is an <strong>unbuffered channel</strong> (<code>make(chan struct{})</code>). In Go, sending to an unbuffered channel is a <em>synchronous rendezvous</em>:</p>
+  <ul>
+    <li>The sender <strong>blocks</strong> until another goroutine is actively waiting to receive from it.</li>
+    <li>If nobody is calling <code>Submit()</code> when <code>Stop()</code> is called, <code>q.stopChan <- struct{}{}</code> <strong>waits forever</strong>. <code>Stop()</code> never finishes!</li>
+    <li>Even if someone <em>is</em> waiting, sending a single value only wakes up <strong>one</strong> goroutine. If 5 requests were waiting to submit, 4 would remain stuck.</li>
+  </ul>
+
+  <h3>The Senior Go Solution: <code>close(q.stopChan)</code></h3>
+  <p>In Go, closing a channel is the universal <strong>broadcast signal</strong>:</p>
+  <pre><code>close(q.stopChan) // ✅ Wakes up EVERY listener immediately!</code></pre>
+  <p>When a channel is closed, any goroutine waiting on <code>case <-q.stopChan:</code> unblocks instantly. And closing never blocks!</p>
+
+  <h2>2. Connecting to Reality: Why are we building this?</h2>
+  <p>Let's ground this in a real production problem: an <strong>E-Commerce Order Fulfillment System</strong>.</p>
+  <p>When a user clicks "Place Order":</p>
+  <ol>
+    <li>The HTTP server cannot run credit card billing, PDF receipt generation, and warehouse inventory sync synchronously inside the request—doing so would take 4 seconds and cause timeouts if 1,000 customers order at once.</li>
+    <li>Instead, the HTTP handler builds a <code>Task</code> (e.g. <code>Payload: "order_id_9482"</code>) and calls <code>q.Submit(ctx, task)</code>. It responds to the user in <strong>2 milliseconds</strong>: <em>"Order accepted, processing in background!"</em></li>
+    <li>Our background <code>worker</code> goroutines pick up the task and run <code>q.processor.Process(ctx, task.Payload)</code>.</li>
+  </ol>
+
+  <h3>The Next Missing Piece: What happened to the task?</h3>
+  <p>If the user later opens their dashboard to check their order, they ask: <em>"Is my receipt ready?"</em></p>
+  <p>Right now, our worker does:</p>
+  <pre><code>_ = q.processor.Process(ctx, task.Payload) // We discard the result!</code></pre>
+  <p>In a real system, the task has a lifecycle:</p>
+  <ol>
+    <li>Before processing starts: <code>task.Status = StatusRunning</code>.</li>
+    <li>If <code>Process(...)</code> succeeds: <code>task.Status = StatusCompleted</code>.</li>
+    <li>If <code>Process(...)</code> fails: <code>task.Status = StatusFailed</code>.</li>
+  </ol>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <p>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue.go"><code>internal/queue/queue.go</code></a>:</p>
+    <ol>
+      <li><strong>Fix <code>Stop()</code>:</strong> Replace <code>q.stopChan <- struct{}{}</code> with <code>close(q.stopChan)</code>.</li>
+      <li><strong>Fix <code>Submit()</code>:</strong> Restore contextual error wrapping for <code>case <-ctx.Done():</code>:
+        <pre><code>case <-ctx.Done():
+    return fmt.Errorf("task submission failed: %w", ctx.Err())</code></pre>
+        (This will also fix the <code>"fmt" imported and not used</code> build error!)
+      </li>
+      <li><strong>Upgrade <code>worker()</code>:</strong> When a task is picked up:
+        <ul>
+          <li>Set <code>task.Status = StatusRunning</code>.</li>
+          <li>Execute <code>err := q.processor.Process(ctx, task.Payload)</code>.</li>
+          <li>If <code>err != nil</code>, set <code>task.Status = StatusFailed</code>. Otherwise, set <code>task.Status = StatusCompleted</code>.</li>
+        </ul>
+      </li>
+      <li>Run <code>go test -v -race ./internal/queue</code> and watch both tests pass in milliseconds!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0005-code-review-and-senior-go-insights.html">Previous: Lesson 0005</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0008: Wiring the Store & Avoiding Package Cycles</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0008: Wiring the Store & Avoiding Package Cycles</h1>
+  <p><em>Target: Connect our thread-safe Store to the Queue engine and master Go's interface decoupling.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your <code>internal/store</code> Package:</strong>
+    <ul>
+      <li>✅ <strong>Flawless RWMutex usage:</strong> Write locks for <code>Save</code>, read locks for <code>GetById</code>. ThreadSanitizer ran cleanly.</li>
+      <li>✅ <strong>Clean Error Handling:</strong> Returning <code>queue.ErrTaskNotFound</code> when lookups fail.</li>
+      <li>💡 <strong>Idiomatic Go Naming Convention:</strong> In Go, acronyms stay uniformly uppercase (e.g. <code>GetByID</code> rather than <code>GetById</code>, and <code>TaskID</code> rather than <code>TaskId</code>). Also, plain <code>Get(ctx, id)</code> is often preferred over <code>GetByID</code> when there is only one lookup method.</li>
+    </ul>
+  </div>
+
+  <h2>1. The Real-World Pipeline: The Store Meets the Worker</h2>
+  <p>Our e-commerce pipeline now has two key components:</p>
+  <ul>
+    <li>The <strong>Queue</strong> (dispatches tasks to worker goroutines).</li>
+    <li>The <strong>Store</strong> (tracks the current state of tasks).</li>
+  </ul>
+  <p>When a worker runs, it needs to update the store at each lifecycle step so the customer's dashboard reflects reality:</p>
+  <ol>
+    <li>Worker picks up task: <code>task.Status = StatusRunning</code> &rarr; save to store!</li>
+    <li>Processor finishes: <code>task.Status = StatusCompleted</code> (or <code>StatusFailed</code>) &rarr; save to store!</li>
+  </ol>
+
+  <h2>2. The Compiler Trap: Package Dependency Cycles</h2>
+  <p>If <code>Queue</code> needs to call <code>store.Save(...)</code>, should <code>package queue</code> import <code>package store</code>?</p>
+  <p><strong>NO!</strong> Look at what <code>internal/store/memory.go</code> imports:</p>
+  <pre><code>import "github.com/.../internal/queue" // for queue.Task</code></pre>
+  <p>If <code>internal/queue</code> imports <code>internal/store</code>, Go will throw a compile-time error:</p>
+  <pre><code>import cycle not allowed:
+    package internal/queue
+    imports internal/store
+    imports internal/queue</code></pre>
+
+  <h2>3. The Senior Go Solution: Consumer-Defined Interfaces</h2>
+  <p>In Go, interfaces are <strong>satisfied implicitly</strong>. A package does not need to know who implements its interface.</p>
+  <p>Instead of importing <code>store.MemoryStore</code>, <code>package queue</code> defines the minimal behavior it requires right inside <code>internal/queue/queue.go</code>:</p>
+  <pre><code>type Store interface {
+    Save(ctx context.Context, task *Task) error
+}</code></pre>
+  <p>Now:</p>
+  <ul>
+    <li><code>queue</code> only depends on its own local <code>Store</code> interface. Zero knowledge of <code>MemoryStore</code>, Postgres, or Redis!</li>
+    <li><code>MemoryStore</code> in <code>internal/store</code> already satisfies this interface because it has a <code>Save(ctx, task)</code> method!</li>
+    <li>Zero import cycle!</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Wire Store into Queue</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue.go"><code>internal/queue/queue.go</code></a>:
+        <ul>
+          <li>Define the consumer interface:
+            <pre><code>type Store interface {
+    Save(ctx context.Context, task *Task) error
+}</code></pre>
+          </li>
+          <li>Add <code>store Store</code> to the <code>Queue</code> struct.</li>
+          <li>Update constructor: <code>func NewQueue(processor Processor, store Store) *Queue</code>.</li>
+          <li>In <code>worker()</code>, update the store when the task starts and finishes:
+            <pre><code>task.Status = StatusRunning
+_ = q.store.Save(ctx, task)
+
+if err := q.processor.Process(ctx, task.Payload); err != nil {
+    task.Status = StatusFailed
+} else {
+    task.Status = StatusCompleted
+}
+_ = q.store.Save(ctx, task)</code></pre>
+          </li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue_test.go"><code>internal/queue/queue_test.go</code></a>:
+        <ul>
+          <li>Create a dummy store or use <code>store.NewMemoryStore()</code> in your tests.</li>
+          <li>Verify that after <code>q.Stop()</code>, querying the store shows all tasks have <code>StatusCompleted</code>!</li>
+        </ul>
+      </li>
+      <li>Run <code>go test -v -race ./...</code>!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0007-thread-safe-storage-and-consumer-interfaces.html">Previous: Lesson 0007</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

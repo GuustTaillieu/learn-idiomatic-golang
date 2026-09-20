@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0016: Database Transactions & Preventing Half-Done Work</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0016: Database Transactions & Preventing Half-Done Work</h1>
+  <p><em>Target: Master atomic consistency with Go's <code>database/sql</code> transactions (<code>tx.Commit</code> & <code>defer tx.Rollback</code>) to guarantee zero half-done states in real-world systems.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your MultiProcessor & Tests:</strong>
+    <ul>
+      <li>🎉 <strong>Composite Pattern Mastered:</strong> Your <code>MultiProcessor</code> cleanly implements <code>queue.Processor</code>. The queue doesn't know or care whether it's executing a single processor or a pipeline of twenty!</li>
+      <li>✅ <strong>Variadic Constructor:</strong> <code>NewMultiProcessor(processors ...queue.Processor)</code> is idiomatic and clean to initialize.</li>
+      <li>✅ <strong>Error Wrapping (<code>%w</code>):</strong> Wrapping with <code>%w</code> preserves error inspection with <code>errors.Is</code> and <code>errors.As</code>.</li>
+      <li>✅ <strong>End-to-End Status Tests:</strong> Both happy path (<code>StatusCompleted</code>) and error path (<code>StatusFailed</code> with <code>FailingProcessor</code>) passed cleanly under the race detector!</li>
+      <li>💡 <strong>Senior Go Polish:</strong> In Go, error strings start with lowercase letters: <code>"pipeline step failed: %w"</code> rather than capitalized <code>"Pipeline..."</code>.</li>
+    </ul>
+  </div>
+
+  <h2>1. Why Mutexes Cannot Prevent "Half-Done" Business Work</h2>
+  <p>You asked an insightful question:</p>
+  <blockquote>
+    <em>"The item someone tries to order suddenly doesn't exist anymore in the database (stock) because another app updated it (or is this not possible because of the mutex?)... a prevention that half of the processing is done and then 1 failed."</em>
+  </blockquote>
+  <p>Here is the fundamental difference between memory locks and database consistency:</p>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 1rem 0;">
+    <thead>
+      <tr style="background-color: #2b2b2b; color: #fff;">
+        <th>Mechanism</th>
+        <th>Scope</th>
+        <th>Survivability</th>
+        <th>What It Protects</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong><code>sync.Mutex</code></strong></td>
+        <td>Single process in RAM</td>
+        <td>Lost if process restarts or crashes</td>
+        <td>Internal Go memory data races between goroutines</td>
+      </tr>
+      <tr>
+        <td><strong>Database Transaction (ACID)</strong></td>
+        <td>Entire system (across all server replicas)</td>
+        <td>Durable on disk / storage engine</td>
+        <td>Business consistency (stock count, balance, task state)</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>If two customers simultaneously purchase the last pair of sneakers through two different web server pods, their local Go mutexes cannot see each other! The database itself must be the authority enforcing atomicity and isolation.</p>
+
+  <h2>2. The Canonical Go Transaction Idiom</h2>
+  <p>In Go's standard library <code>database/sql</code>, transactions follow a precise, battle-tested pattern:</p>
+  <pre><code>tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+    return fmt.Errorf("begin transaction: %w", err)
+}
+// 💡 THE GOLDEN IDIOM: Always defer a Rollback immediately!
+defer tx.Rollback()
+
+// ... Execute queries against tx (not db!) ...
+if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+    return fmt.Errorf("exec step: %w", err) // Automatically rolls back on return!
+}
+
+// All steps succeeded, so commit!
+if err := tx.Commit(); err != nil {
+    return fmt.Errorf("commit transaction: %w", err)
+}
+// If Commit() succeeded, the deferred Rollback() safely does nothing!</code></pre>
+
+  <p><strong>Why <code>defer tx.Rollback()</code> is brilliant:</strong></p>
+  <ol>
+    <li>If <em>any</em> statement fails and returns early, the deferred <code>Rollback()</code> immediately cancels all changes.</li>
+    <li>If your code encounters a <code>panic</code>, the deferred <code>Rollback()</code> still runs, preventing dangling locks in the database.</li>
+    <li>If <code>tx.Commit()</code> succeeds, the transaction is already closed; Go's database driver makes the subsequent deferred <code>tx.Rollback()</code> a harmless no-op that returns <code>sql.ErrTxDone</code> and does nothing.</li>
+  </ol>
+
+  <h2>3. The Real-World Domain: Order Fulfillment & Inventory</h2>
+  <p>Let's ground this in our e-commerce domain. Consider an order where a customer buys an item:</p>
+  <p>If we do this naively:</p>
+  <ol>
+    <li>Deduct stock in database (Stock: 1 &rarr; 0).</li>
+    <li>Server crashes OR payment processor rejects card.</li>
+    <li><strong>Result:</strong> Stock is gone, customer was not billed, no order exists. <em>Half-done catastrophe!</em></li>
+  </ol>
+  <p>With an <strong>Atomic Transaction</strong>:</p>
+  <pre><code>// 1. Reserve inventory with an atomic condition:
+res, err := tx.ExecContext(ctx, "UPDATE inventory SET stock = stock - ? WHERE item_id = ? AND stock >= ?", qty, itemID, qty)
+if err != nil {
+    return err
+}
+rows, _ := res.RowsAffected()
+if rows == 0 {
+    return ErrInsufficientStock // Transaction aborts, stock is untouched!
+}
+
+// 2. Insert order task into tasks table:
+_, err = tx.ExecContext(ctx, "INSERT INTO tasks (id, payload, status, created_at) VALUES (?, ?, ?, ?)", ...)
+if err != nil {
+    return err
+}
+
+// 3. Commit both together:
+return tx.Commit()</code></pre>
+
+  <h2>4. Preparing for the Outbox Pattern</h2>
+  <p>You noted how you solved this in .NET with Kafka and SQLite. The pattern is called the <strong>Transactional Outbox</strong>:</p>
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>[HTTP POST /orders] &rarr; [BEGIN TX] &rarr; (1. Reserve Stock + 2. Insert Outbox Event) &rarr; [COMMIT TX]</code></p>
+    <p>&darr;</p>
+    <p><code>[Background Worker] &larr; Reads pending outbox events from DB &rarr; Sends to Queue</code></p>
+  </div>
+  <p>Because the business data and the task event are committed in the <em>same atomic transaction</em>, it is physically impossible to save the order without also saving the event to be processed!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build Transactional Order Creation</h3>
+    <p>Let's implement inventory management and atomic order reservation in our SQLite store:</p>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/task_sqlite.go"><code>internal/store/task_sqlite.go</code></a>:
+        <ul>
+          <li>Add an <code>inventory</code> table to the migration in <code>NewTaskSqliteStore</code>:
+            <pre><code>CREATE TABLE IF NOT EXISTS inventory (
+    item_id TEXT PRIMARY KEY,
+    stock INTEGER NOT NULL
+);</code></pre>
+          </li>
+          <li>Add a helper method to seed inventory for testing/admin:
+            <code>SetStock(ctx context.Context, itemID string, stock int) error</code>
+            (and optionally <code>GetStock(ctx context.Context, itemID string) (int, error)</code>).
+          </li>
+          <li>Implement the atomic method:
+            <pre><code>func (s *TaskSqliteStore) CreateOrderWithStockReservation(ctx context.Context, task *queue.Task, itemID string, qty int) error</code></pre>
+            Using the canonical transaction idiom (<code>BeginTx</code>, <code>defer tx.Rollback()</code>, atomic <code>UPDATE inventory SET stock = stock - ? WHERE item_id = ? AND stock >= ?</code>, insert task, and <code>tx.Commit()</code>).
+            If <code>RowsAffected() == 0</code>, return a domain sentinel error: <code>ErrInsufficientStock = errors.New("insufficient stock")</code>.
+          </li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/task_sqlite_test.go"><code>internal/store/task_sqlite_test.go</code></a>:
+        Write two tests:
+        <ul>
+          <li><strong>Test 1 (Sufficient Stock):</strong> Seed 5 items, order 2 items. Verify order task is saved AND remaining stock is 3.</li>
+          <li><strong>Test 2 (Insufficient Stock):</strong> Seed 1 item, order 2 items. Verify it returns <code>ErrInsufficientStock</code>, remaining stock stays 1, and the order task is <strong>not</strong> saved in <code>tasks</code>!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/store</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0015-sqlite-upsert-and-database-transactions.html">Previous: Lesson 0015</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0003: Graceful Shutdown, Drain Semantics, and Race Testing</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0003: Graceful Shutdown, Drain Semantics, and Race Testing</h1>
+  <p><em>Target: Master clean resource shutdown and verify concurrency with <code>go test -race</code>.</em></p>
+
+  <div class="callout">
+    <strong>Win:</strong> You've built <code>Submit</code>, <code>Start</code>, and <code>worker</code>! Tasks can now be queued and processed across concurrent workers. Now comes the mark of a senior engineer: <strong>stopping cleanly without dropping data or deadlocking.</strong>
+  </div>
+
+  <h2>1. What Happens on Shutdown?</h2>
+  <p>In production, when a service receives a shutdown signal (e.g. <code>Ctrl+C</code> or Kubernetes <code>SIGTERM</code>), you cannot just kill the process. Any task currently being processed or sitting in the buffer must be allowed to complete.</p>
+  <p>A graceful shutdown requires three sequential steps:</p>
+  <ol>
+    <li><strong>Stop accepting new work:</strong> Reject future <code>Submit()</code> calls with <code>ErrQueueClosed</code>.</li>
+    <li><strong>Signal workers that no more work is coming:</strong> Close the <code>tasks</code> channel.</li>
+    <li><strong>Wait for workers to finish:</strong> Block until all in-flight tasks are drained and every worker exits.</li>
+  </ol>
+
+  <h2>2. The Exclusive Write Lock (<code>sync.Mutex</code> vs <code>sync.RWMutex</code>)</h2>
+  <p>In <code>Submit()</code>, we used <code>q.mu.RLock()</code> because we were only <em>reading</em> <code>q.closed</code>.</p>
+  <p>In <code>Shutdown()</code>, we are <strong>mutating</strong> state (setting <code>q.closed = true</code> and closing the channel). Here, we must acquire the <strong>exclusive write lock</strong>: <code>q.mu.Lock()</code>.</p>
+  <pre><code>func (q *Queue) Shutdown() {
+    q.mu.Lock()
+    if q.closed {
+        q.mu.Unlock()
+        return // Idempotent: already closed!
+    }
+    q.closed = true
+    close(q.tasks)
+    q.mu.Unlock()
+
+    q.wg.Wait() // Wait for all workers to finish draining!
+}</code></pre>
+
+  <h2>3. Why <code>close(q.tasks)</code> Doesn't Drop Tasks</h2>
+  <p>A beautiful feature of Go channels: <strong>closing a channel does NOT destroy its buffered items.</strong></p>
+  <p>If there are 5 tasks still in the channel when <code>close(q.tasks)</code> is called, the workers will continue to read them one by one (with <code>ok == true</code>). Only when the channel is <em>completely empty</em> will the next read return <code>ok == false</code>, triggering the worker to exit and call <code>defer q.wg.Done()</code>.</p>
+
+  <h2>4. Why call <code>q.wg.Wait()</code> AFTER releasing the lock?</h2>
+  <p>Notice that we unlock <code>q.mu.Unlock()</code> <em>before</em> calling <code>q.wg.Wait()</code>.</p>
+  <p>If you call <code>Wait()</code> while still holding <code>q.mu.Lock()</code>, any goroutine that might need the lock (even a reader) will be blocked indefinitely while waiting for workers to finish. A golden rule of Go concurrency: <strong>hold locks for the shortest possible scope. Never perform blocking operations (like I/O or WaitGroup waiting) while holding a mutex.</strong></p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Add <code>func (q *Queue) Shutdown()</code> to <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue.go"><code>internal/queue/queue.go</code></a>.
+        <ul>
+          <li>Acquire <code>q.mu.Lock()</code>.</li>
+          <li>Check if already closed (return early if so).</li>
+          <li>Set <code>q.closed = true</code> and call <code>close(q.tasks)</code>.</li>
+          <li>Release the lock with <code>q.mu.Unlock()</code>.</li>
+          <li>Call <code>q.wg.Wait()</code> to ensure all workers complete.</li>
+        </ul>
+      </li>
+      <li>Once implemented, we'll write a test in <code>internal/queue/queue_test.go</code> to run with <code>go test -race</code>!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0002-goroutines-worker-pools-and-waitgroups.html">Previous: Lesson 0002</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

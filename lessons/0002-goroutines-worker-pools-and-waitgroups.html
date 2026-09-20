@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0002: Goroutines, Worker Pools, and sync.WaitGroup</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0002: Goroutines, Worker Pools, and <code>sync.WaitGroup</code></h1>
+  <p><em>Target: Learn how background workers consume from channels and how to track their lifecycle.</em></p>
+
+  <div class="callout">
+    <strong>Win:</strong> You just implemented <code>Submit()</code> with a read-lock and context select! Now we build the consumer side: the worker pool that pulls tasks off the channel and processes them.
+  </div>
+
+  <h2>1. Mental Model: What is a Worker in Go?</h2>
+  <p>In Go, we don't have heavy thread pools managed by the OS. Goroutines are lightweight (starting at only ~2KB of memory), scheduled cooperatively by the Go runtime (the <em>M:N scheduler</em>).</p>
+  <p>A "worker" is simply a long-running goroutine executing a loop that waits for work on a channel:</p>
+  <pre><code>func (q *Queue) worker(ctx context.Context) {
+    defer q.wg.Done()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return // Shutdown requested!
+        case task, ok := <-q.tasks:
+            if !ok {
+                return // The channel was closed!
+            }
+            // Execute the work!
+            _ = q.processor.Process(ctx, task.Payload)
+        }
+    }
+}</code></pre>
+
+  <h2>2. The "Comma-OK" Idiom on Channels</h2>
+  <p>Notice <code>task, ok := <-q.tasks</code>. Why not just <code>task := <-q.tasks</code>?</p>
+  <p>In Go, when a channel is closed, receiving from it <strong>does not block or crash</strong>. Instead, it immediately produces the type's zero-value (an empty <code>Task{}</code>)!</p>
+  <p>To differentiate between an empty task that was genuinely sent versus a closed channel, Go gives us the boolean <code>ok</code>:</p>
+  <ul>
+    <li><code>ok == true</code>: A real task was sent and received.</li>
+    <li><code>ok == false</code>: The channel is closed and drained! We should exit the worker loop.</li>
+  </ul>
+
+  <h2>3. The <code>sync.WaitGroup</code> Triangle</h2>
+  <p>You already added <code>wg sync.WaitGroup</code> to the <code>Queue</code> struct. Here is how it works:</p>
+  <ol>
+    <li><strong><code>wg.Add(1)</code></strong>: Increment the counter. <em>Critical Senior Rule:</em> Always call <code>Add()</code> in the spawning goroutine <strong>before</strong> launching the <code>go worker()</code>, never inside the worker itself (to avoid a race where <code>Wait()</code> checks before <code>Add()</code> runs).</li>
+    <li><strong><code>defer wg.Done()</code></strong>: Inside the worker, decrement the counter when the worker function exits.</li>
+    <li><strong><code>wg.Wait()</code></strong>: Used during shutdown to block until every single worker has finished and the counter reaches 0.</li>
+  </ol>
+
+  <h2>4. Spawning the Pool: <code>Start()</code></h2>
+  <p>A senior Go queue controls its concurrency limit through a <code>numWorkers</code> parameter:</p>
+  <pre><code>func (q *Queue) Start(ctx context.Context, numWorkers int)</code></pre>
+  <p>This spins up <em>N</em> worker goroutines, each running concurrently and sharing the single <code>q.tasks</code> channel. Go automatically balances the incoming tasks across whoever is ready!</p>
+
+  <h2>Recommended Primary Reading</h2>
+  <p>Read Ardan Labs on WaitGroup semantics: <a href="https://github.com/ardanlabs/gotraining">ardanlabs/gotraining: Data Races & WaitGroups</a>.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Implement <code>worker</code> and <code>Start</code></h3>
+    <p>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue.go"><code>internal/queue/queue.go</code></a>:</p>
+    <ol>
+      <li>Add an unexported method <code>func (q *Queue) worker(ctx context.Context)</code>:
+        <ul>
+          <li>Call <code>defer q.wg.Done()</code> right at the start.</li>
+          <li>Write a <code>for { select { ... } }</code> loop handling both <code><-ctx.Done()</code> and <code>task, ok := <-q.tasks</code>.</li>
+          <li>If a task is received and <code>ok</code> is true, invoke <code>q.processor.Process(ctx, task.Payload)</code>.</li>
+        </ul>
+      </li>
+      <li>Add a public method <code>func (q *Queue) Start(ctx context.Context, numWorkers int)</code>:
+        <ul>
+          <li>Loop from <code>0</code> to <code>numWorkers</code>.</li>
+          <li>For each iteration, call <code>q.wg.Add(1)</code> and launch the worker in a goroutine: <code>go q.worker(ctx)</code>.</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0001-channels-mutexes-and-the-submit-method.html">Previous: Lesson 0001</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

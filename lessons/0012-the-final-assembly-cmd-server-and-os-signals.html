@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0012: The Final Assembly: cmd/server and OS Signal Handling</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0012: The Final Assembly: <code>cmd/server</code> & OS Signal Handling</h1>
+  <p><em>Target: Wire our queue, store, and HTTP server together in a real runnable binary with zero-downtime graceful shutdown.</em></p>
+
+  <div class="callout">
+    <strong>Milestone:</strong> All package unit tests passed with <code>-race</code>! Your HTTP layer now cleanly separates routing, serialization, and state tracking.
+  </div>
+
+  <h2>1. The Composition Root: What belongs in <code>main()</code>?</h2>
+  <p>In senior Go architecture, packages inside <code>internal/</code> should never know how the application is configured or executed. They are building blocks.</p>
+  <p>The <strong>Composition Root</strong> is <code>cmd/server/main.go</code>. It is the only place in the codebase that imports all concrete types, wires them together, and manages the process lifecycle.</p>
+
+  <h2>2. Modern Signal Handling: <code>signal.NotifyContext</code></h2>
+  <p>How does a production Go server catch <code>Ctrl+C</code> or Kubernetes <code>SIGTERM</code> without abruptly killing in-flight tasks?</p>
+  <p>Go 1.16+ introduced the elegant <code>signal.NotifyContext</code>:</p>
+  <pre><code>ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()</code></pre>
+  <p>When an interrupt arrives, <code>ctx.Done()</code> fires! That gives our application the trigger to initiate graceful shutdown.</p>
+
+  <h2>3. The Graceful Teardown Sequence</h2>
+  <p>When <code>ctx.Done()</code> fires, we execute teardown in strict reverse order:</p>
+  <ol>
+    <li><strong>Stop accepting new HTTP traffic:</strong>
+      <pre><code>shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+_ = server.Shutdown(shutdownCtx)</code></pre>
+      This closes the listening network port and allows active HTTP requests to complete.
+    </li>
+    <li><strong>Stop the worker queue:</strong>
+      <pre><code>q.Stop()</code></pre>
+      This closes the task channel and waits for all active workers to finish draining.
+    </li>
+    <li><strong>Exit cleanly:</strong> All database connections or files close, and the process terminates with code 0.</li>
+  </ol>
+
+  <h2>4. A Real Production Processor: Simulating Work</h2>
+  <p>In our tests, we used a mock processor. In our real binary, let's create a realistic processor (e.g. an order processor that simulates billing and shipping by logging and sleeping for 500ms):</p>
+  <pre><code>type OrderProcessor struct{}
+
+func (p *OrderProcessor) Process(ctx context.Context, payload string) error {
+    slog.Info("processing order", "order", payload)
+    select {
+    case <-time.After(500 * time.Millisecond):
+        slog.Info("order fulfilled successfully", "order", payload)
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build <code>cmd/server/main.go</code></h3>
+    <ol>
+      <li>Create directory: <code>cmd/server/</code>.</li>
+      <li>Create file: <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Declare <code>package main</code>.</li>
+          <li>In <code>main()</code>:
+            <ol>
+              <li>Set up signal context with <code>signal.NotifyContext</code>.</li>
+              <li>Initialize <code>s := store.NewMemoryStore()</code>.</li>
+              <li>Initialize a processor (e.g. <code>&OrderProcessor{}</code>).</li>
+              <li>Initialize <code>q := queue.NewQueue(p, s)</code>.</li>
+              <li>Start 3 background workers: <code>q.Start(ctx, 3)</code>.</li>
+              <li>Initialize <code>handler := httpapi.NewHandler(q, s)</code>.</li>
+              <li>Create <code>srv := &http.Server{Addr: ":8080", Handler: handler.Routes()}</code>.</li>
+              <li>Launch the server in a goroutine:
+                <pre><code>go func() {
+    if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+        slog.Error("server failed", "error", err)
+    }
+}()</code></pre>
+              </li>
+              <li>Wait for signal: <code><-ctx.Done()</code>.</li>
+              <li>Run shutdown: <code>srv.Shutdown(...)</code> then <code>q.Stop()</code>.</li>
+            </ol>
+          </li>
+        </ul>
+      </li>
+      <li>Run your server:
+        <pre><code>go run ./cmd/server</code></pre>
+      </li>
+      <li>Test with <code>curl</code> from a second terminal:
+        <pre><code>curl -i -X POST http://localhost:8080/tasks -d '{"payload":"laptop_order_99"}'
+curl -i http://localhost:8080/tasks/&lt;id-from-previous-command&gt;</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0011-dependency-injection-httptest-and-pathvalue.html">Previous: Lesson 0011</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

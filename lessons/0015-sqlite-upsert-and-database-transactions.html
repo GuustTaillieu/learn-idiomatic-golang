@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0015: SQLite Upsert, Real Persistence, & Database Transactions</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0015: SQLite Upsert, Real Persistence, & Database Transactions</h1>
+  <p><em>Target: Fix status updates with SQL Upsert, wire SQLite into <code>main.go</code>, and master atomic transactions (<code>tx.Commit</code> & <code>defer tx.Rollback</code>).</em></p>
+
+  <div class="callout">
+    <strong>Review of Your <code>TaskSqliteStore</code>:</strong>
+    <ul>
+      <li>✅ <strong>Driver & Migrations:</strong> Pure-Go <code>modernc.org/sqlite</code> driver connected cleanly and created the table automatically.</li>
+      <li>✅ <strong>Error Translation:</strong> You mapped <code>sql.ErrNoRows</code> &rarr; <code>queue.ErrTaskNotFound</code>. Callers never leak SQL-specific details.</li>
+      <li>✅ <strong>Testing Discipline:</strong> You wrote <code>t.Helper()</code>, tested with in-memory SQLite (<code>:memory:</code>), and used <code>.Equal()</code> for comparing <code>time.Time</code>.</li>
+      <li>⚠️ <strong>The Upsert Bug:</strong> Let's see what happens when a task changes status from <code>PENDING</code> to <code>RUNNING</code>!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Primary Key Conflict (Why We Need Upsert)</h2>
+  <p>In <code>task_sqlite.go</code>, your query is:</p>
+  <pre><code>INSERT INTO tasks (id, payload, status, created_at)
+VALUES (?, ?, ?, ?);</code></pre>
+  <p>Think about our task lifecycle:</p>
+  <ol>
+    <li>HTTP handler creates task &rarr; calls <code>store.Save(ctx, task)</code> (status is <code>PENDING</code>). Row inserted successfully!</li>
+    <li>Background worker picks up task &rarr; sets <code>task.Status = StatusRunning</code> &rarr; calls <code>store.Save(ctx, task)</code>.</li>
+    <li><strong>CRASH:</strong> <code>UNIQUE constraint failed: tasks.id</code>! Because the task ID already exists in the table!</li>
+  </ol>
+  <p>In SQLite and PostgreSQL, the senior solution is an <strong>Upsert</strong> (Insert or Update):</p>
+  <pre><code>INSERT INTO tasks (id, payload, status, created_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    status = excluded.status;</code></pre>
+  <p>If the ID is new, it inserts. If the ID exists, it updates the status! Zero errors.</p>
+
+  <h2>2. Swapping the Store in <code>cmd/server/main.go</code></h2>
+  <p>Notice the power of the interfaces you wrote. To make your entire server persist data to a real file on disk (<code>tasks.db</code>), you only need to change lines in <code>main.go</code>:</p>
+  <pre><code>db, err := sql.Open("sqlite", "tasks.db")
+if err != nil {
+    slog.Error("failed to open database", "error", err)
+    os.Exit(1)
+}
+defer db.Close()
+
+s, err := store.NewTaskSqliteStore(db)
+if err != nil {
+    slog.Error("failed to create store", "error", err)
+    os.Exit(1)
+}</code></pre>
+  <p>Neither <code>internal/queue</code> nor <code>internal/httpapi</code> has to change at all!</p>
+
+  <h2>3. Preventing Half-Done Work: The Go Transaction Idiom</h2>
+  <p>You asked: <em>"How do we prevent things from being half-done? If one part succeeds and the other fails?"</em></p>
+  <p>In Go, we use <strong>Database Transactions</strong>. Here is the canonical, idiomatic Go transaction pattern:</p>
+  <pre><code>tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+    return err
+}
+// 💡 Senior Pattern: Always defer a Rollback immediately!
+defer tx.Rollback()
+
+// Step 1: Check and reserve stock
+if _, err := tx.ExecContext(ctx, "UPDATE inventory SET stock = stock - 1 WHERE item = ? AND stock > 0", item); err != nil {
+    return err // defer tx.Rollback() runs automatically!
+}
+
+// Step 2: Record order task
+if _, err := tx.ExecContext(ctx, "INSERT INTO tasks ...", ...); err != nil {
+    return err // defer tx.Rollback() runs automatically!
+}
+
+// Step 3: Commit!
+if err := tx.Commit(); err != nil {
+    return err
+}
+// If tx.Commit() succeeded, the deferred tx.Rollback() is a safe no-op!</code></pre>
+  <p>If anything returns early with an error, the deferred <code>tx.Rollback()</code> guarantees that no half-done state ever reaches the database.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/task_sqlite.go"><code>internal/store/task_sqlite.go</code></a>:
+        Update <code>Save</code> with <code>ON CONFLICT(id) DO UPDATE SET status = excluded.status;</code>.
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/task_sqlite_test.go"><code>internal/store/task_sqlite_test.go</code></a>:
+        Add a test confirming that saving a task twice with different statuses (e.g. <code>StatusPending</code> then <code>StatusCompleted</code>) updates successfully without unique constraint errors!
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        Swap <code>NewMemoryStore()</code> for <code>NewTaskSqliteStore(db)</code> backed by <code>tasks.db</code>.
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0014-production-databases-with-database-sql-and-sqlite.html">Previous: Lesson 0014</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

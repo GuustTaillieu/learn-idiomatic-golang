@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0007: Thread-Safe Storage & Consumer-Defined Interfaces</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0007: Thread-Safe Storage & Consumer-Defined Interfaces</h1>
+  <p><em>Target: Build a thread-safe repository for order tracking and learn why Go maps crash under concurrency.</em></p>
+
+  <div class="callout">
+    <strong>Win:</strong> You fixed the broadcast shutdown with <code>close(q.stopChan)</code> and added lifecycle status transitions (<code>StatusRunning</code>, <code>StatusCompleted</code>, <code>StatusFailed</code>) to <code>worker()</code>. All tests pass with zero race conditions!
+  </div>
+
+  <h2>1. The Real-World Problem: "Where did my order go?"</h2>
+  <p>In our E-Commerce pipeline, when the customer clicks "Buy Now", the HTTP API generates a task with an ID and returns it immediately: <em>"Order #abc-123 placed!"</em></p>
+  <p>Two seconds later, the customer's browser asks: <code>GET /orders/abc-123</code>.</p>
+  <p>Currently, our tasks only exist transiently while floating in the channel! Once a worker finishes, the task is gone from memory. If the customer queries their order status, we have nothing to show them.</p>
+  <p>We need a <strong>Task Store</strong> (repository) to persist and look up tasks by their ID.</p>
+
+  <h2>2. Why Go Maps Crash Under Concurrency</h2>
+  <p>In Go, built-in maps are <strong>NOT thread-safe</strong>. If two goroutines access a map concurrently and at least one is a write:</p>
+  <pre><code>fatal error: concurrent map writes
+fatal error: concurrent map read and map write</code></pre>
+  <p>This is not a regular error you can catch with <code>if err != nil</code>. It is an unrecoverable runtime panic that instantly terminates the entire application!</p>
+  <p>To safely store tasks in memory, our store struct must pair a map with a <code>sync.RWMutex</code>:</p>
+  <pre><code>type MemoryStore struct {
+    mu    sync.RWMutex
+    tasks map[string]*Task
+}</code></pre>
+  <ul>
+    <li><strong><code>Save(ctx, task)</code>:</strong> Modifies the map &rarr; requires exclusive lock (<code>s.mu.Lock()</code> / <code>defer s.mu.Unlock()</code>).</li>
+    <li><strong><code>Get(ctx, id)</code>:</strong> Only reads from the map &rarr; allows multiple concurrent readers (<code>s.mu.RLock()</code> / <code>defer s.mu.RUnlock()</code>).</li>
+  </ul>
+
+  <h2>3. Idiomatic Design: Consumer-Defined Interfaces</h2>
+  <p>In languages like Java or C#, developers often create massive interface hierarchies upfront (e.g. <code>IRepository&lt;T&gt;</code> with 20 methods). In idiomatic Go, we follow: <em>"Define interfaces where they are consumed, keeping them as small as possible (1-2 methods)."</em></p>
+  <p>What does our system actually need right now?</p>
+  <pre><code>type Store interface {
+    Save(ctx context.Context, task *Task) error
+    Get(ctx context.Context, id string) (*Task, error)
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build <code>internal/store</code></h3>
+    <ol>
+      <li>Create directory: <code>internal/store/</code>.</li>
+      <li>Create file: <code>internal/store/memory.go</code>:
+        <ul>
+          <li>Declare <code>package store</code>.</li>
+          <li>Define <code>type MemoryStore struct</code> holding a <code>sync.RWMutex</code> and <code>tasks map[string]*Task</code>.</li>
+          <li>Write constructor <code>func NewMemoryStore() *MemoryStore</code> that initializes the map with <code>make(map[string]*Task)</code>.</li>
+          <li>Implement <code>Save(ctx context.Context, task *queue.Task) error</code>:
+            Acquires write lock, stores <code>s.tasks[task.ID] = task</code>, returns <code>nil</code>.</li>
+          <li>Implement <code>Get(ctx context.Context, id string) (*queue.Task, error)</code>:
+            Acquires read lock. If found, returns the task and <code>nil</code>. If not found, returns <code>nil, queue.ErrTaskNotFound</code>.</li>
+        </ul>
+      </li>
+      <li>Create a test file: <code>internal/store/memory_test.go</code>:
+        <ul>
+          <li>Test saving a task and retrieving it by ID.</li>
+          <li>Test querying an unknown ID and verifying <code>errors.Is(err, queue.ErrTaskNotFound)</code>.</li>
+        </ul>
+      </li>
+      <li>Run <code>go test -v -race ./internal/store</code>!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0006-channel-broadcasting-and-real-world-task-processing.html">Previous: Lesson 0006</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

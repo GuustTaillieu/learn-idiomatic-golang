@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0005: Comprehensive Code Review & Senior Go Refinements</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0005: Code Review & Senior Go Refinements</h1>
+  <p><em>Target: Review your working queue, examine subtle concurrency edge cases, and discover senior Go nuances.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Reached:</strong> Your tests passed with <code>go test -v -race ./internal/queue</code>! Zero race conditions, zero deadlocks. You wrote a real, working concurrent worker engine.
+  </div>
+
+  <h2>1. What You Got 100% Right</h2>
+  <ul>
+    <li><strong>Mock-Free Testing:</strong> You wrote <code>MockProcessor</code> natively inside <code>queue_test.go</code> without pulling in bloated mocking libraries. That is pure idiomatic Go.</li>
+    <li><strong>Thread-Safe Test Double:</strong> You remembered to put a <code>sync.Mutex</code> on your <code>MockProcessor</code> slice because multiple workers call it concurrently. Many developers miss that.</li>
+    <li><strong>Race Detector Clean:</strong> Your shutdown and drain logic passed ThreadSanitizer cleanly.</li>
+    <li><strong>Sentinel Error Matching:</strong> You used <code>errors.Is(err, ErrQueueClosed)</code> rather than string equality (<code>err.Error() == ...</code>).</li>
+  </ul>
+
+  <h2>2. Senior Refinement #1: Pointer vs Value Semantics</h2>
+  <p>In <code>task.go</code>, you wrote:</p>
+  <pre><code>func NewTask(payload string) *Task { ... }</code></pre>
+  <p>And in your test, notice what you had to do:</p>
+  <pre><code>q.Submit(ctx, *NewTask(...)) // Notice the asterisk!</code></pre>
+  <p>Why did you have to dereference it with <code>*</code>? Because <code>NewTask</code> returns a pointer (<code>*Task</code>), but <code>Submit(ctx, task Task)</code> expects a value (<code>Task</code>).</p>
+  <p><strong>Senior Guideline:</strong> In Go, pick a semantic for each type and stick to it:</p>
+  <ul>
+    <li>If <code>Task</code> is an immutable value object, have <code>NewTask(...) Task</code> return by value.</li>
+    <li>If <code>Task</code> represents a stateful entity whose status changes (<code>StatusRunning</code>, <code>StatusCompleted</code>), pass <code>*Task</code> everywhere (<code>chan *Task</code>, <code>Submit(ctx, t *Task)</code>).</li>
+  </ul>
+
+  <h2>3. Senior Refinement #2: "Make the Zero Value Useful"</h2>
+  <p>One of Go's famous proverbs is: <em>"Make the zero value useful."</em></p>
+  <p>In <code>queue.go</code>, you wrote:</p>
+  <pre><code>return &Queue{
+    processor: processor,
+    tasks:     make(chan Task, 100),
+    wg:        sync.WaitGroup{}, // Unnecessary
+    mu:        sync.RWMutex{},   // Unnecessary
+    closed:    false,            // Unnecessary
+}</code></pre>
+  <p>In Go, newly allocated memory is automatically zeroed out. The zero value of a <code>sync.Mutex</code> is already an unlocked, valid mutex. The zero value of a <code>sync.WaitGroup</code> is an active counter of 0. The zero value of <code>bool</code> is <code>false</code>.</p>
+  <p>So idiomatic Go simply omits them:</p>
+  <pre><code>return &Queue{
+    processor: processor,
+    tasks:     make(chan Task, 100),
+}</code></pre>
+
+  <h2>4. Senior Refinement #3: The Hidden Lock Contention Edge Case</h2>
+  <p>Look at your <code>Submit</code> method:</p>
+  <pre><code>func (q *Queue) Submit(ctx context.Context, task Task) error {
+    q.mu.RLock()
+    defer q.mu.RUnlock()
+
+    if q.closed {
+        return ErrQueueClosed
+    }
+
+    select {
+    case q.tasks <- task:
+        return nil
+    case <-ctx.Done():
+        return fmt.Errorf("task submission failed: %w", ctx.Err())
+    }
+}</code></pre>
+  <p>What happens if the buffer (100 tasks) is completely full? <code>q.tasks <- task</code> will pause and wait. But while it is waiting, <strong>it is still holding <code>q.mu.RLock()</code>!</strong></p>
+  <p>If someone calls <code>q.Stop()</code> right now, <code>q.Stop()</code> tries to call <code>q.mu.Lock()</code> (exclusive lock). It will be <strong>blocked</strong> waiting for <code>Submit</code> to release its read lock! But <code>Submit</code> won't release its lock until a worker pulls a task!</p>
+  <p>This is called <strong>Lock Contention</strong>. In modern Go, we solve this by introducing a <code>stopCh chan struct{}</code> so <code>Submit</code> can exit immediately without holding a lock during the channel send.</p>
+
+  <div class="footer">
+    <p><a href="0004-testing-concurrency-and-the-race-detector.html">Previous: Lesson 0004</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

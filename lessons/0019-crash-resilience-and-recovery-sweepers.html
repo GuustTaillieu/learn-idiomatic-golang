@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0019: Crash Resilience & The Recovery Sweeper</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0019: Crash Resilience & The Recovery Sweeper</h1>
+  <p><em>Target: Fix a subtle phantom-rollback bug, eliminate leftover SQL scan boilerplate, and build a boot-time recovery sweeper to guarantee zero lost orders across crashes.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Review: You Built an End-to-End Distributed Order System!</strong>
+    <ul>
+      <li>🎉 <strong>All tests passing with 0 data races!</strong> Concurrency, SQLite stores, payment simulation, and rollback flows all run cleanly.</li>
+      <li>✨ <strong>Context-Bound Transaction Management:</strong> You wrote <code>lib.TxFromContext(ctx)</code> so stores join active transactions seamlessly without polluting signatures!</li>
+      <li>🛡️ <strong>Type-Safe IDs:</strong> <code>ItemID</code>, <code>OrderID</code>, and <code>StockID</code> implement <code>driver.Valuer</code> and <code>sql.Scanner</code>.</li>
+    </ul>
+  </div>
+
+  <h2>1. Critical Bug: The Phantom Rollback in <code>PlaceOrderProcessor</code></h2>
+  <p>Look closely at how you returned from <code>Process</code> in <code>internal/processor/place_order.go</code>:</p>
+  <pre><code>// ⚠️ Look at the return statement:
+return func() error {
+    if err := p.InventoryStore.ReleaseStock(ctx, stock); err != nil {
+        return err
+    }
+    return nil
+}, tx.Commit()</code></pre>
+
+  <p><strong>The Gotcha:</strong> What happens if <code>tx.Commit()</code> returns an error (e.g., SQLite locked or disk I/O error)?</p>
+  <ol>
+    <li>Go evaluates both return values: the rollback closure <code>func() error</code> AND the error from <code>tx.Commit()</code>.</li>
+    <li>In <code>queue.go</code>, the worker sees <code>err != nil</code>. It dutifully calls <code>cleanup()</code>!</li>
+    <li><code>cleanup()</code> calls <code>ReleaseStock(ctx, stock)</code> which runs <code>UPDATE inventory SET quantity = quantity + 1</code>.</li>
+    <li><strong>The Catastrophe:</strong> Because <code>tx.Commit()</code> failed, the stock deduction was <em>already rolled back</em> by the deferred <code>tx.Rollback()</code>! When <code>cleanup()</code> runs, you add +1 stock to an item that was never deducted! You just created <strong>free phantom stock</strong> out of thin air.</li>
+  </ol>
+
+  <p><strong>The Fix:</strong> Never return a rollback function if the commit itself failed!</p>
+  <pre><code>if err := tx.Commit(); err != nil {
+    return nil, fmt.Errorf("failed to commit order transaction: %w", err)
+}
+
+rollbackFunc := func() error {
+    return p.InventoryStore.ReleaseStock(ctx, stock)
+}
+return rollbackFunc, nil</code></pre>
+
+  <h2>2. Code Cleanup: Delete the Redundant SQL Parsing</h2>
+  <p>Now that <code>domain.ItemID</code> implements <code>sql.Scanner</code>, you no longer need the temporary string variables in <code>internal/store/inventory_sqlite.go</code>:</p>
+  <pre><code>// Before:
+var itemIDStr string
+if err := row.Scan(&itemIDStr, &stock.Quantity, &stock.CreatedAt, &stock.UpdatedAt); err != nil { ... }
+itemUUID, err := uuid.Parse(itemIDStr)
+stock.ItemID = domain.ItemID(itemUUID)
+
+// After (Idiomatic Senior Go):
+if err := row.Scan(&stock.ItemID, &stock.Quantity, &stock.CreatedAt, &stock.UpdatedAt); err != nil {
+    if errors.Is(err, sql.ErrNoRows) {
+        return nil, fmt.Errorf("stock not found for item %s: %w", itemID, err)
+    }
+    return nil, fmt.Errorf("failed to get stock: %w", err)
+}</code></pre>
+  <p>Also, in <code>ReserveStock</code>, replace <code>stock.ItemID.String()</code> with simply <code>stock.ItemID</code>. The driver will automatically call <code>.Value()</code>.</p>
+
+  <h2>3. DRY Up <code>MultiProcessor</code></h2>
+  <p>In <code>internal/processor/multi.go</code>, you wrote the exact same reverse-loop rollback closure twice (once in the error branch, once in the success branch). You can extract it into a local closure:</p>
+  <pre><code>rollbackAll := func() error {
+    for i := len(rollbackFuncs) - 1; i >= 0; i-- {
+        if err := rollbackFuncs[i](); err != nil {
+            return fmt.Errorf("rollback failed: %w", err)
+        }
+    }
+    return nil
+}
+
+// On error:
+return rollbackAll, err
+
+// On success:
+return rollbackAll, nil</code></pre>
+
+  <h2>4. The Next Frontier: Crash Recovery & Sweepers</h2>
+  <p>Consider this real-world production incident:</p>
+  <blockquote>
+    <em>"A server receives 200 orders. The HTTP handler writes them into SQLite with status <code>PENDING</code> and queues them. Suddenly, someone trips over the power cable in the datacenter, or Docker restarts the container."</em>
+  </blockquote>
+  <p>When your app reboots:</p>
+  <ul>
+    <li>The in-memory Go channel (<code>q.orders</code>) is completely empty!</li>
+    <li>Those 200 orders exist in SQLite with <code>status = "PENDING"</code>, but will <strong>never be processed</strong> because nothing pushes them into the channel!</li>
+  </ul>
+  <p>This is where senior Go systems implement a <strong>Boot Recovery Sweeper</strong>.</p>
+  <p>When <code>main.go</code> boots up (before opening the HTTP port to traffic), it queries the database for stranded orders and feeds them into the queue:</p>
+  <pre><code>// At startup:
+pendingOrders, err := orderStore.GetPendingOrders(ctx)
+for _, order := range pendingOrders {
+    _ = q.Submit(ctx, order)
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Fix the Phantom Rollback:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/place_order.go"><code>internal/processor/place_order.go</code></a>, commit the transaction first. Only return <code>rollbackFunc, nil</code> if commit succeeds!</li>
+      <li><strong>Clean up SQLite Store:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/inventory_sqlite.go"><code>internal/store/inventory_sqlite.go</code></a>:
+        <ul>
+          <li>Scan directly into <code>&stock.ItemID</code> in <code>Get</code>.</li>
+          <li>Pass <code>stock.ItemID</code> directly in <code>ReserveStock</code>.</li>
+        </ul>
+      </li>
+      <li><strong>Add Recovery Query:</strong>
+        <ul>
+          <li>In <code>OrderSqliteStore</code>, add:
+            <pre><code>func (s *OrderSqliteStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, error)</code></pre>
+            Query: <code>SELECT id, item_id, amount, status, created_at FROM orders WHERE status = 'PENDING' ORDER BY created_at ASC;</code>
+          </li>
+          <li>In <code>cmd/server/main.go</code>, before starting the HTTP server, load pending orders from SQLite and submit them into the queue so stranded orders resume automatically!</li>
+        </ul>
+      </li>
+      <li>Run your test suite:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0018-strongly-typed-ids-sql-scanner-and-valuer.html">Previous: Lesson 0018</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

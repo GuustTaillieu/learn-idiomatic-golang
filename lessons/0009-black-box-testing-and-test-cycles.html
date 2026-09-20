@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0009: The Black-Box Testing Pattern & Test Cycles</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0009: The <code>_test</code> Package & Solving Import Cycles</h1>
+  <p><em>Target: Learn Go's built-in solution for test import cycles: Black-Box testing with <code>package foo_test</code>.</em></p>
+
+  <div class="callout">
+    <strong>Your Question:</strong> <em>"I have put this in a new package because I got warnings about cyclic imports when I put it in the queue package. You said write this: store.NewMemoryStore() but that created the cyclic import warning. Tell me how to do it properly."</em>
+  </div>
+
+  <h2>1. Why the Cyclic Import Happened</h2>
+  <p>Look at what was happening:</p>
+  <pre><code>internal/store/memory.go  ──►  imports "internal/queue" (needs *queue.Task)
+             ▲                              │
+             │                              ▼
+             └────── imports "internal/store" (in queue_test.go with 'package queue')</code></pre>
+  <p>When <code>queue_test.go</code> had <code>package queue</code> at the top, the compiler treated it as part of <code>package queue</code>. And since <code>internal/store</code> already imports <code>internal/queue</code>, having <code>package queue</code> import <code>internal/store</code> created an illegal loop!</p>
+
+  <h2>2. Go's Secret Weapon: <code>package &lt;name&gt;_test</code></h2>
+  <p>In almost any other programming language, all files in the same directory must belong to the exact same package. <strong>Go has one deliberate, built-in exception to this rule for testing:</strong></p>
+  <p>A test file in <code>internal/queue/</code> is allowed to declare:</p>
+  <pre><code>package queue_test</code></pre>
+  <p>Notice the <code>_test</code> suffix!</p>
+  <p>When the Go compiler sees <code>package queue_test</code>:</p>
+  <ol>
+    <li>It treats <code>queue_test.go</code> as an <strong>external client/consumer</strong> of the <code>queue</code> package.</li>
+    <li>It can import both <code>internal/queue</code> and <code>internal/store</code> simultaneously with <strong>ZERO import cycle</strong>!</li>
+    <li>The file still lives right next to <code>queue.go</code> in <code>internal/queue/queue_test.go</code>. You do not need an unnatural <code>internal/tests/</code> folder.</li>
+  </ol>
+
+  <h3>White-Box vs. Black-Box Testing</h3>
+  <ul>
+    <li><strong><code>package queue</code> (White-Box):</strong> The test is "inside" the package. It can access unexported fields like <code>q.closed</code>, <code>q.tasks</code>, or <code>q.mu</code>.</li>
+    <li><strong><code>package queue_test</code> (Black-Box):</strong> The test is "outside" the package. It interacts only through the exported API (<code>queue.NewQueue</code>, <code>q.Submit</code>, <code>q.Start</code>, <code>q.Stop</code>). This is the gold standard for integration and API testing in Go.</li>
+  </ul>
+
+  <h2>3. Reviewing Your New 3rd Test</h2>
+  <p>Look at lines 53–57 in your new test:</p>
+  <pre><code>q.Start(ctx, 3)
+for i := 0; i < 5; i++ {
+    q.Submit(ctx, queue.NewTask("payload"))
+    q.Stop() // ⚠️ Inside the loop!
+}</code></pre>
+  <p>Look where <code>q.Stop()</code> is! On iteration <code>i = 0</code>, the first task is submitted, and then <code>q.Stop()</code> shuts down the queue. On iterations <code>1, 2, 3, 4</code>, <code>q.Submit</code> returned <code>ErrQueueClosed</code>, which wasn't checked.</p>
+  <p>Moving <code>q.Stop()</code> <strong>after</strong> the loop will submit all 5 tasks and wait for all 5 to be stored as <code>StatusCompleted</code>!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Move <code>internal/tests/queue_test.go</code> back to <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue_test.go"><code>internal/queue/queue_test.go</code></a>.</li>
+      <li>At the very top (line 1), change the package to:
+        <pre><code>package queue_test</code></pre>
+      </li>
+      <li>Move <code>q.Stop()</code> outside the <code>for</code> loop in <code>TestQueue_StoppingWhileProcessing_StillStoresAllTasksAsCompleted</code>, and assert that <code>len(s.Tasks) == 5</code>!</li>
+      <li>Delete the temporary <code>internal/tests</code> folder. (You can also bring <code>MockProcessor</code> back into <code>queue_test.go</code> if you prefer, deleting <code>internal/processor</code>, keeping things flat!).</li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0008-interfaces-and-avoiding-package-cycles.html">Previous: Lesson 0008</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

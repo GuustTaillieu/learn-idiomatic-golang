@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0004: Testing Concurrency and the Race Detector</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0004: Testing Concurrency and the Race Detector</h1>
+  <p><em>Target: Write robust tests for concurrent Go code and verify safety with <code>go test -race</code>.</em></p>
+
+  <div class="callout">
+    <strong>Win:</strong> You completed the core <code>Queue</code> lifecycle: <code>New</code>, <code>Submit</code>, <code>Start</code>, and <code>Stop</code>! Now we verify it like senior engineers: using native tests, mock-free stubs, and the Go race detector.
+  </div>
+
+  <h2>1. The Go Race Detector (<code>go test -race</code>)</h2>
+  <p>Concurrent bugs (data races) are notoriously hard to reproduce because they depend on thread interleaving and CPU scheduling. They might work 99.9% of the time and crash in production under load.</p>
+  <p>Go has a superpower built into the toolchain: <strong>ThreadSanitizer</strong>. When you add the <code>-race</code> flag:</p>
+  <pre><code>go test -v -race ./internal/queue</code></pre>
+  <p>The compiler instruments every memory access. If two goroutines access the same variable at the same time and at least one is a write, Go immediately fails the test and prints a detailed stack trace of both goroutines!</p>
+
+  <h2>2. Mock-Free Interface Stubs</h2>
+  <p>In senior Go, we rarely reach for heavy third-party mocking frameworks for small interfaces. Because our <code>Queue</code> accepts the <code>Processor</code> interface:</p>
+  <pre><code>type Processor interface {
+    Process(ctx context.Context, payload string) error
+}</code></pre>
+  <p>We can create a lightweight test stub right inside our <code>_test.go</code> file:</p>
+  <pre><code>type mockProcessor struct {
+    mu        sync.Mutex
+    processed []string
+}
+
+func (m *mockProcessor) Process(ctx context.Context, payload string) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.processed = append(m.processed, payload)
+    return nil
+}</code></pre>
+  <p>Notice that because multiple workers call <code>Process()</code> concurrently, our test stub also protects its slice with a mutex! That's concurrency discipline end-to-end.</p>
+
+  <h2>3. The Golden Rule of Concurrent Tests: Never Rely on <code>time.Sleep</code></h2>
+  <p>Novice tests often do this:</p>
+  <pre><code>q.Submit(...)
+time.Sleep(100 * time.Millisecond) // ❌ FLAKY!
+assert(...)</code></pre>
+  <p>Why is this an anti-pattern? On a busy CI runner, 100ms might not be enough and the test fails randomly. Or it wastes seconds sitting idle.</p>
+  <p>Instead, we rely on synchronization: calling <code>q.Stop()</code> blocks until all workers drain and finish. Once <code>Stop()</code> returns, we are 100% guaranteed that all submitted tasks have completed!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Write <code>internal/queue/queue_test.go</code></h3>
+    <p>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue_test.go"><code>internal/queue/queue_test.go</code></a>:</p>
+    <ol>
+      <li>Declare <code>package queue</code> and import <code>testing</code>, <code>context</code>, <code>sync</code>, and <code>errors</code>.</li>
+      <li>Create your <code>mockProcessor</code> struct with a mutex and a slice of received payloads.</li>
+      <li>Write <code>TestQueue_SubmitAndProcess(t *testing.T)</code>:
+        <ul>
+          <li>Create a mock processor, context, and a new queue.</li>
+          <li>Start 3 workers: <code>q.Start(ctx, 3)</code>.</li>
+          <li>Submit 5 tasks in a loop.</li>
+          <li>Call <code>q.Stop()</code>.</li>
+          <li>Check that the number of processed tasks is exactly 5!</li>
+        </ul>
+      </li>
+      <li>Write <code>TestQueue_SubmitAfterStop(t *testing.T)</code>:
+        <ul>
+          <li>Create a queue and call <code>q.Stop()</code> immediately.</li>
+          <li>Try calling <code>q.Submit(...)</code> and verify it returns <code>ErrQueueClosed</code> using <code>errors.Is(err, ErrQueueClosed)</code>.</li>
+        </ul>
+      </li>
+      <li>Run your tests in your terminal with:
+        <pre><code>go test -v -race ./internal/queue</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0003-graceful-shutdown-and-drain-semantics.html">Previous: Lesson 0003</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

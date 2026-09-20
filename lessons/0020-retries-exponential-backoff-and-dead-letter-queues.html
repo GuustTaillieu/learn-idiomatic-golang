@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0020: Retries, Exponential Backoff, & Dead-Letter Queues (DLQ)</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0020: Retries, Exponential Backoff, & Dead-Letter Queues (DLQ)</h1>
+  <p><em>Target: Upgrade our queue from instant-fail to production-grade resilience with retry classification, exponential backoff, and dead-letter handling.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Review: The Startup Sweeper Works!</strong>
+    <ul>
+      <li>✅ <strong>Phantom Rollback Defeated:</strong> You moved <code>tx.Commit()</code> before the return in <code>PlaceOrderProcessor</code>, eliminating phantom stock creation.</li>
+      <li>✅ <strong>Zero-Boilerplate SQL:</strong> Clean, direct scanning into <code>stock.ItemID</code>.</li>
+      <li>✅ <strong>DRY MultiProcessor:</strong> Clean <code>rollbackAll</code> closure.</li>
+      <li>✅ <strong>Startup Recovery:</strong> In <code>cmd/server/main.go</code>, stranded orders with <code>StatusPending</code> are automatically fetched via <code>orderStore.GetPendingOrders(ctx)</code> and re-submitted to the queue at boot!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Real-World Dilemma: Transient vs. Fatal Failures</h2>
+  <p>In our current pipeline, if <code>PaymentProcessor</code> or another external service encounters a 500ms network timeout or <code>503 Service Unavailable</code>:</p>
+  <ol>
+    <li>The processor returns an error.</li>
+    <li>The worker immediately triggers <code>cleanup()</code> (releasing reserved stock!).</li>
+    <li>The order is marked <code>StatusFailed</code> and discarded forever.</li>
+  </ol>
+  <p>In high-volume e-commerce (and distributed systems in general), network hiccups happen all the time. Canceling a customer's order on the very first transient glitch loses revenue and creates angry customers.</p>
+  <p>Instead, production systems categorize errors:</p>
+  <ul>
+    <li><strong>Fatal (Non-Retryable) Errors:</strong> e.g., <code>ErrInsufficientStock</code>, Invalid Item ID, Stolen Card. &rarr; <em>Fail immediately, execute rollback.</em></li>
+    <li><strong>Transient (Retryable) Errors:</strong> e.g., HTTP 500, network timeout, rate limit exceeded. &rarr; <em>Retry with backoff!</em></li>
+  </ul>
+
+  <h2>2. Exponential Backoff & Jitter</h2>
+  <p>If an external payment gateway is overloaded, hammering it again immediately will only make the outage worse (the "thundering herd" problem).</p>
+  <p>Instead, we back off exponentially between attempts:</p>
+  <pre><code>Attempt 1: wait 100ms
+Attempt 2: wait 200ms
+Attempt 3: wait 400ms
+...</code></pre>
+  <p>In Go, this calculation is simple and clean:</p>
+  <pre><code>backoff := baseDelay * time.Duration(1 << order.Retries) // 2^retries
+select {
+case <-ctx.Done():
+    return ctx.Err()
+case <-time.After(backoff):
+}</code></pre>
+
+  <h2>3. The Dead-Letter Queue (DLQ)</h2>
+  <p>What happens if an order fails 3 times in a row and retries are exhausted?</p>
+  <p>We do not delete it or leave it in a mystery state. We transition it to a dedicated state:</p>
+  <pre><code>const StatusDeadLetter OrderStatus = "DEAD_LETTER"</code></pre>
+  <p>A Dead-Letter status signals to operations and customer support: <em>"This order failed repeatedly after maximum retries. It requires manual review or automated alerting."</em></p>
+
+  <h2>4. Error Classification in Idiomatic Go</h2>
+  <p>How do we tell if an error is retryable without tight coupling? <strong>Go Interfaces!</strong></p>
+  <pre><code>// Transient errors implement this interface:
+type Retryable interface {
+    Retryable() bool
+}
+
+func IsRetryable(err error) bool {
+    var r Retryable
+    if errors.As(err, &r) {
+        return r.Retryable()
+    }
+    return false
+}</code></pre>
+  <p>Or with sentinel errors using <code>errors.Is(err, ErrTransient)</code>!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build Resilient Worker Retries</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/order.go"><code>internal/domain/order.go</code></a>:
+        <ul>
+          <li>Add <code>StatusDeadLetter OrderStatus = "DEAD_LETTER"</code>.</li>
+          <li>Add fields to <code>Order</code>:
+            <pre><code>Retries    int
+MaxRetries int // default to 3 in NewOrder</code></pre>
+          </li>
+          <li>Define a sentinel error: <code>var ErrTransient = errors.New("transient error, please retry")</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/queue.go"><code>internal/domain/queue.go</code></a>:
+        Update the worker error handling:
+        <ul>
+          <li>If <code>err != nil</code>:
+            <ul>
+              <li>If <code>order.Retries < order.MaxRetries</code> AND the error is retryable (or if retries remain):
+                <ol>
+                  <li>Increment <code>order.Retries++</code>.</li>
+                  <li>Calculate exponential backoff (e.g. <code>10ms * (1 << order.Retries)</code> for tests).</li>
+                  <li>Wait with <code>select { case <-ctx.Done(): return; case <-time.After(delay): }</code>.</li>
+                  <li>Re-submit or re-process the order!</li>
+                </ol>
+              </li>
+              <li>If retries are exhausted (<code>order.Retries >= order.MaxRetries</code>):
+                <ol>
+                  <li>Execute <code>cleanup()</code> rollback!</li>
+                  <li>Set <code>order.Status = StatusDeadLetter</code> (or <code>StatusFailed</code>).</li>
+                  <li>Save to store.</li>
+                </ol>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/queue_test.go"><code>internal/domain/queue_test.go</code></a>:
+        Write a test verifying:
+        <ul>
+          <li>A processor that fails on the first 2 attempts but succeeds on the 3rd attempt results in <code>StatusCompleted</code> with <code>Retries == 2</code>!</li>
+          <li>A processor that consistently fails results in <code>StatusDeadLetter</code> (or <code>StatusFailed</code>) and triggers rollback once <code>MaxRetries</code> is reached.</li>
+        </ul>
+      </li>
+      <li>Run the test suite:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0019-crash-resilience-and-recovery-sweepers.html">Previous: Lesson 0019</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

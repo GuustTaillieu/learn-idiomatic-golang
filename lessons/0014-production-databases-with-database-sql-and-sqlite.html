@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0014: Production Databases with database/sql & SQLite</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0014: Production Databases with <code>database/sql</code> & SQLite</h1>
+  <p><em>Target: Upgrade from in-memory maps to durable database persistence using Go's standard library <code>database/sql</code>.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your MultiProcessor & Tests:</strong>
+    <ul>
+      <li>✅ <strong>Composite Pattern Mastered:</strong> You chained multiple processors. Both happy path (all succeed &rarr; <code>StatusCompleted</code>) and error path (one fails &rarr; <code>StatusFailed</code>) passed ThreadSanitizer!</li>
+      <li>✅ <strong>Senior Slice Allocation in <code>GetAll()</code>:</strong> You used <code>make([]*queue.Task, 0, len(s.tasks))</code> with pre-allocated capacity under read lock. Excellent performance awareness!</li>
+      <li>💡 <strong>Typo to fix:</strong> In <code>mutli.go</code>, rename <code>MutliProcessor</code> to <code>MultiProcessor</code> (swap the 't' and 'l').</li>
+    </ul>
+  </div>
+
+  <h2>1. Why <code>database/sql</code> in Senior Go?</h2>
+  <p>In the Go ecosystem, while third-party ORMs like GORM exist, senior Go teams and tech companies overwhelmingly prefer standard <code>database/sql</code> (often with query tools like sqlc). Why?</p>
+  <ul>
+    <li><strong>Built-in Connection Pooling:</strong> <code>sql.DB</code> is not an open connection—it is a thread-safe connection pool! It manages opening, reusing, and closing connections under high concurrency automatically.</li>
+    <li><strong>Zero Reflection Overhead:</strong> Direct scanning with <code>rows.Scan(&t.ID, ...)</code> is blazingly fast and predictable.</li>
+    <li><strong>ACID Transactions:</strong> Full support for transactions via <code>db.BeginTx(ctx, nil)</code> with commit and rollback.</li>
+  </ul>
+
+  <h2>2. The Blank Import Idiom (<code>_ "modernc.org/sqlite"</code>)</h2>
+  <p>How does Go connect <code>database/sql</code> to a specific database engine without hardcoding dependencies? <strong>The Driver Pattern.</strong></p>
+  <pre><code>import (
+    "database/sql"
+    _ "modernc.org/sqlite" // 👈 The blank identifier!
+)</code></pre>
+  <p>In Go, an import with <code>_</code> runs the package's <code>init()</code> function without bringing its identifiers into scope. The SQLite package's <code>init()</code> calls <code>sql.Register("sqlite", &Driver{})</code> under the hood. Then, calling <code>sql.Open("sqlite", "tasks.db")</code> knows exactly how to speak to SQLite!</p>
+
+  <h2>3. The SQLite Schema & Upsert Query</h2>
+  <p>Our database schema for tasks:</p>
+  <pre><code>CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at DATETIME NOT NULL
+);</code></pre>
+  <p>When saving a task, we use SQLite's <code>ON CONFLICT</code> (Upsert) so updating an existing task's status doesn't fail:</p>
+  <pre><code>INSERT INTO tasks (id, payload, status, created_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    status = excluded.status;</code></pre>
+  <p><em>Security Rule:</em> Always use <code>?</code> placeholders! Never concatenate strings into SQL queries.</p>
+
+  <h2>4. Translating <code>sql.ErrNoRows</code> to Domain Errors</h2>
+  <p>When <code>s.db.QueryRowContext(...)</code> finds no matching row, <code>row.Scan(...)</code> returns <code>sql.ErrNoRows</code>.</p>
+  <p>A senior Go package hides database-specific implementation details from callers. We translate it to our domain sentinel error:</p>
+  <pre><code>if errors.Is(err, sql.ErrNoRows) {
+    return nil, queue.ErrTaskNotFound // Clean domain error!
+}</code></pre>
+
+  <h2>5. The Beauty of Interface Decoupling</h2>
+  <p>Notice something amazing: because <code>Queue</code> and <code>Handler</code> only depend on:</p>
+  <pre><code>type Store interface {
+    Save(ctx context.Context, task *Task) error
+    Get(ctx context.Context, id string) (*Task, error)
+}</code></pre>
+  <p>Our new <code>SQLiteStore</code> will satisfy this interface 100%! We can swap from in-memory to a real SQLite database file by changing only <strong>one line</strong> in <code>main.go</code>, without touching a single line of queue or HTTP code.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build <code>SQLiteStore</code></h3>
+    <ol>
+      <li>Fix the typo: rename <code>internal/processor/mutli.go</code> to <code>multi.go</code> and <code>MutliProcessor</code> to <code>MultiProcessor</code>.</li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/sqlite.go"><code>internal/store/sqlite.go</code></a>:
+        <ul>
+          <li>Define <code>type SQLiteStore struct { db *sql.DB }</code>.</li>
+          <li>Write constructor <code>func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error)</code> that runs the <code>CREATE TABLE IF NOT EXISTS tasks ...</code> migration.</li>
+          <li>Implement <code>Save(ctx context.Context, task *queue.Task) error</code> using <code>s.db.ExecContext</code>.</li>
+          <li>Implement <code>Get(ctx context.Context, id string) (*queue.Task, error)</code> using <code>s.db.QueryRowContext</code> and translating <code>sql.ErrNoRows</code> to <code>queue.ErrTaskNotFound</code>.</li>
+          <li>Implement <code>GetAll(ctx context.Context) ([]*queue.Task, error)</code> using <code>s.db.QueryContext</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/sqlite_test.go"><code>internal/store/sqlite_test.go</code></a>:
+        <ul>
+          <li>Open an in-memory SQLite database: <code>db, _ := sql.Open("sqlite", ":memory:")</code>.</li>
+          <li>Test <code>Save</code>, <code>Get</code>, and <code>ErrTaskNotFound</code>.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/store</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0013-pipeline-concurrency-and-preventing-half-done-work.html">Previous: Lesson 0013</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

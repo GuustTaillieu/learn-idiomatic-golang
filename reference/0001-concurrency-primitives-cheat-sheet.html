@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Go Concurrency Primitives</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Go Concurrency Primitives</h1>
+  <p><em>Compressed mental models and syntax rules for idiomatic Go concurrency.</em></p>
+
+  <h2>1. Channels (<code>chan T</code>)</h2>
+  <p>Channels are typed conduits for sending and receiving values between goroutines. They coordinate work without manual locks.</p>
+  <ul>
+    <li><strong>Unbuffered (<code>make(chan T)</code>)</strong>: Synchronous. A send blocks until another goroutine receives; a receive blocks until another sends. (Direct handoff).</li>
+    <li><strong>Buffered (<code>make(chan T, N)</code>)</strong>: Asynchronous up to capacity <em>N</em>. Sends only block when the buffer is full. Receives block when the buffer is empty.</li>
+    <li><strong>Sending</strong>: <code>ch <- value</code></li>
+    <li><strong>Receiving</strong>: <code>val := <-ch</code></li>
+  </ul>
+
+  <h2>2. Mutexes (<code>sync.Mutex</code> & <code>sync.RWMutex</code>)</h2>
+  <p>Used when multiple goroutines must read or write shared in-memory state (like a map or struct field).</p>
+  <ul>
+    <li><strong>Race condition</strong>: Occurs when two goroutines access the same memory concurrently and at least one is a write.</li>
+    <li><strong><code>sync.Mutex</code></strong>: Mutual exclusion. Only one goroutine can hold the lock at a time.
+      <pre><code>mu.Lock()
+defer mu.Unlock() // guarantees unlock even if panic occurs</code></pre>
+    </li>
+    <li><strong><code>sync.RWMutex</code></strong>: Reader/Writer lock. Multiple readers can read simultaneously (<code>mu.RLock() / defer mu.RUnlock()</code>), but a writer gets exclusive access (<code>mu.Lock() / defer mu.Unlock()</code>).</li>
+  </ul>
+
+  <h2>3. Multiplexing with <code>select</code></h2>
+  <p>A <code>select</code> statement lets a goroutine wait on multiple channel operations simultaneously. It blocks until one case is ready.</p>
+  <pre><code>select {
+case task := <-q.tasks:
+    // Process task
+case <-ctx.Done():
+    // Context timed out or was cancelled
+    return ctx.Err()
+}</code></pre>
+
+  <h2>4. Waiting Groups (<code>sync.WaitGroup</code>)</h2>
+  <p>Coordinates waiting for a collection of goroutines to complete their execution.</p>
+  <ul>
+    <li><code>wg.Add(1)</code>: Increment counter before launching the goroutine.</li>
+    <li><code>wg.Done()</code>: Decrement counter when goroutine finishes (usually <code>defer wg.Done()</code>).</li>
+    <li><code>wg.Wait()</code>: Blocks until the counter reaches zero.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Part of the <a href="../MISSION.md">Idiomatic Go Mission</a>. Ask Antigravity anytime you need clarification.</p>
+  </div>
+
+</body>
+</html>

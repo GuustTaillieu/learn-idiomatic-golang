@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0018: Strongly-Typed IDs with sql.Scanner and driver.Valuer</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0018: Strongly-Typed IDs with <code>sql.Scanner</code> & <code>driver.Valuer</code></h1>
+  <p><em>Target: Learn how senior Go engineers build compile-time type safety with custom ID types and teach <code>database/sql</code> how to read and write them natively.</em></p>
+
+  <div class="callout">
+    <strong>Senior Review: You Are Writing Enterprise-Grade Go!</strong>
+    <ul>
+      <li>🏆 <strong>You built a Saga Pattern!</strong> In <code>internal/processor/multi.go</code>, you collected rollback closures and executed them in <em>reverse order</em> on error. That is production-level distributed compensation logic.</li>
+      <li>🛡️ <strong>Strongly-Typed IDs:</strong> Creating <code>type OrderID uuid.UUID</code> and <code>type ItemID uuid.UUID</code> is <strong>not overkill</strong>. It is a prized pattern that eliminates entire classes of silent ID-swapping bugs at compile time!</li>
+      <li>💡 <strong>Why SQL Complained:</strong> SQLite didn't fail because it can't handle custom types—it failed because it didn't know <em>how to serialize</em> a 16-byte array without two standard library interfaces: <code>driver.Valuer</code> and <code>sql.Scanner</code>.</li>
+    </ul>
+  </div>
+
+  <h2>1. Is Strongly-Typed IDs Overkill?</h2>
+  <p>Imagine this common function in a large codebase:</p>
+  <pre><code>func TransferItem(itemID, targetWarehouseID, requesterID string) error</code></pre>
+  <p>What happens if someone accidentally calls:</p>
+  <pre><code>TransferItem(requesterID, itemID, targetWarehouseID) // 💥 All strings! Compiles without error!</code></pre>
+  <p>The compiler is helpless. In production, this causes corrupt records, security breaches, or missing items.</p>
+  <p>With <strong>Strongly-Typed IDs</strong> (The NewType Pattern):</p>
+  <pre><code>type ItemID uuid.UUID
+type WarehouseID uuid.UUID
+type UserID uuid.UUID
+
+func TransferItem(item ItemID, warehouse WarehouseID, requester UserID) error</code></pre>
+  <p>If you swap any arguments, the Go compiler refuses to compile with a clear type mismatch error. Senior Go codebases at Uber, Stripe, and Google use this pattern extensively.</p>
+
+  <h2>2. The SQL Bridge: <code>driver.Valuer</code> & <code>sql.Scanner</code></h2>
+  <p>When you ran your tests, you hit this error:</p>
+  <pre><code>sql: converting argument $1 type: unsupported type domain.ItemID, a array</code></pre>
+  <p>Why? Because <code>uuid.UUID</code> is under the hood <code>type UUID [16]byte</code>. The standard <code>database/sql</code> driver only knows primitive types: <code>int64</code>, <code>float64</code>, <code>bool</code>, <code>[]byte</code>, <code>string</code>, <code>time.Time</code>, and <code>nil</code>.</p>
+  <p>To teach <code>database/sql</code> how to read and write your custom types, Go provides two canonical interfaces:</p>
+
+  <div style="display: flex; gap: 1rem; margin: 1.5rem 0;">
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #61afef; margin-top: 0;">1. Writing to DB: <code>driver.Valuer</code></h3>
+      <p>Package: <code>database/sql/driver</code></p>
+      <p>Tells <code>db.ExecContext</code> or <code>db.QueryRowContext</code> how to turn your custom Go type into an SQL primitive.</p>
+      <pre><code>// Value implements driver.Valuer
+func (id ItemID) Value() (driver.Value, error) {
+    return uuid.UUID(id).String(), nil
+}</code></pre>
+    </div>
+
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #98c379; margin-top: 0;">2. Reading from DB: <code>sql.Scanner</code></h3>
+      <p>Package: <code>database/sql</code></p>
+      <p>Tells <code>row.Scan(&order.ID)</code> how to convert database bytes/strings into your custom Go type.</p>
+      <pre><code>// Scan implements sql.Scanner
+func (id *ItemID) Scan(src any) error {
+    if src == nil {
+        *id = NilItemID
+        return nil
+    }
+    switch v := src.(type) {
+    case string:
+        u, err := uuid.Parse(v)
+        if err != nil { return err }
+        *id = ItemID(u)
+        return nil
+    case []byte:
+        u, err := uuid.Parse(string(v))
+        if err != nil { return err }
+        *id = ItemID(u)
+        return nil
+    default:
+        return fmt.Errorf("cannot scan %T into ItemID", src)
+    }
+}</code></pre>
+    </div>
+  </div>
+
+  <h2>3. The Magic Result in Your Stores</h2>
+  <p>Once <code>ItemID</code> and <code>OrderID</code> implement <code>driver.Valuer</code> and <code>sql.Scanner</code>:</p>
+  <ol>
+    <li>You can pass <code>order.ID</code> directly into <code>db.ExecContext(ctx, query, order.ID, ...)</code> without calling <code>.String()</code>!</li>
+    <li>You can scan directly into <code>row.Scan(&order.ID, &order.ItemID, ...)</code> with zero temporary string variables!</li>
+  </ol>
+
+  <h2>4. Watch Out for <code>PlaceOrderProcessor</code> Nil Pointer</h2>
+  <p>In <code>internal/processor/place_order.go</code>:</p>
+  <pre><code>type PlaceOrderProcessor struct {
+    db *sql.DB // ⚠️ Look here!
+    InventoryStore InventoryStore
+    OrderStore     OrderStore
+}
+
+func NewPlaceOrderProcessor(inventoryStore InventoryStore, orderStore OrderStore) *PlaceOrderProcessor {
+    return &PlaceOrderProcessor{
+        InventoryStore: inventoryStore,
+        OrderStore:     orderStore,
+    } // db is nil! Calling p.db.BeginTx() will panic!
+}</code></pre>
+  <p>If you plan to use <code>p.db.BeginTx</code> inside <code>PlaceOrderProcessor</code>, pass <code>db *sql.DB</code> into its constructor, or recall our earlier lesson: keep the database transaction inside the store (e.g. <code>OrderStore.CreateOrderWithStockReservation</code>) so processors don't need raw SQL handles!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Wire <code>Valuer</code> and <code>Scanner</code></h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/item.go"><code>internal/domain/item.go</code></a>:
+        <ul>
+          <li>Import <code>"database/sql/driver"</code> and <code>"fmt"</code>.</li>
+          <li>Add <code>func (id ItemID) Value() (driver.Value, error)</code>.</li>
+          <li>Add <code>func (id *ItemID) Scan(src any) error</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/order.go"><code>internal/domain/order.go</code></a>:
+        <ul>
+          <li>Add <code>Value() (driver.Value, error)</code> and <code>Scan(src any) error</code> for <code>OrderID</code>.</li>
+        </ul>
+      </li>
+      <li>Run the tests:
+        <pre><code>go test -v -race ./...</code></pre>
+        Watch all your store tests turn green!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0017-task-vs-order-architecture-and-the-dbtx-pattern.html">Previous: Lesson 0017</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
