@@ -10,18 +10,18 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type InventorySQLiteStore struct {
+type InventorySQLite struct {
 	db lib.DBTX
 }
 
-func (s *InventorySQLiteStore) getDB(ctx context.Context) lib.DBTX {
+func (s *InventorySQLite) getDB(ctx context.Context) lib.DBTX {
 	if tx, ok := lib.TxFromContext(ctx); ok {
 		return tx
 	}
 	return s.db
 }
 
-func NewInventorySQLiteStore(db *sql.DB) (*InventorySQLiteStore, error) {
+func NewInventorySQLiteStore(db *sql.DB) (*InventorySQLite, error) {
 	query := `
 		CREATE TABLE IF NOT EXISTS inventory (
 			id TEXT PRIMARY KEY,
@@ -34,10 +34,10 @@ func NewInventorySQLiteStore(db *sql.DB) (*InventorySQLiteStore, error) {
 	if _, err := db.Exec(query); err != nil {
 		return nil, err
 	}
-	return &InventorySQLiteStore{db: db}, nil
+	return &InventorySQLite{db: db}, nil
 }
 
-func (s *InventorySQLiteStore) ReserveStock(ctx context.Context, stock *domain.Stock) error {
+func (s *InventorySQLite) ReserveStock(ctx context.Context, stock *domain.Stock) error {
 	query := `
 		UPDATE inventory
 		SET quantity = quantity - ?, updated_at = ?
@@ -56,7 +56,7 @@ func (s *InventorySQLiteStore) ReserveStock(ctx context.Context, stock *domain.S
 	return nil
 }
 
-func (s *InventorySQLiteStore) ReleaseStock(ctx context.Context, stock *domain.Stock) error {
+func (s *InventorySQLite) ReleaseStock(ctx context.Context, stock *domain.Stock) error {
 	query := `
 		UPDATE inventory
 		SET quantity = quantity + ?, updated_at = ?
@@ -67,7 +67,7 @@ func (s *InventorySQLiteStore) ReleaseStock(ctx context.Context, stock *domain.S
 	return nil
 }
 
-func (s *InventorySQLiteStore) AddStock(ctx context.Context, stock *domain.Stock) error {
+func (s *InventorySQLite) AddStock(ctx context.Context, stock *domain.Stock) error {
 	query := `
 		INSERT INTO inventory (id, item_id, quantity, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)
@@ -80,7 +80,7 @@ func (s *InventorySQLiteStore) AddStock(ctx context.Context, stock *domain.Stock
 	return nil
 }
 
-func (s *InventorySQLiteStore) Get(ctx context.Context, itemID domain.ItemID) (*domain.Stock, error) {
+func (s *InventorySQLite) Get(ctx context.Context, itemID domain.ItemID) (*domain.Stock, error) {
 	query := `
 		SELECT item_id, quantity, created_at, updated_at
 		FROM inventory

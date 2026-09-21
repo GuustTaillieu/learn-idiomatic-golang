@@ -7,18 +7,18 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
-type ItemMemoryStore struct {
+type ItemMemory struct {
 	mu    sync.RWMutex
 	items map[domain.ItemID]*domain.Item
 }
 
-func NewItemMemoryStore() *ItemMemoryStore {
-	return &ItemMemoryStore{
+func NewItemMemoryStore() *ItemMemory {
+	return &ItemMemory{
 		items: make(map[domain.ItemID]*domain.Item),
 	}
 }
 
-func (s *ItemMemoryStore) Save(ctx context.Context, item *domain.Item) error {
+func (s *ItemMemory) Save(ctx context.Context, item *domain.Item) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -26,7 +26,7 @@ func (s *ItemMemoryStore) Save(ctx context.Context, item *domain.Item) error {
 	return nil
 }
 
-func (s *ItemMemoryStore) Get(ctx context.Context, id domain.ItemID) (*domain.Item, error) {
+func (s *ItemMemory) Get(ctx context.Context, id domain.ItemID) (*domain.Item, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -38,7 +38,7 @@ func (s *ItemMemoryStore) Get(ctx context.Context, id domain.ItemID) (*domain.It
 	return item, nil
 }
 
-func (s *ItemMemoryStore) GetAll(ctx context.Context) ([]*domain.Item, error) {
+func (s *ItemMemory) GetAll(ctx context.Context) ([]*domain.Item, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

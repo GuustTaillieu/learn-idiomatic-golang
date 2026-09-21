@@ -17,12 +17,11 @@ type OrderStore interface {
 }
 
 type Handler struct {
-	queue Queue
 	store OrderStore
 }
 
-func NewHandler(queue Queue, store OrderStore) *Handler {
-	return &Handler{queue, store}
+func NewHandler(store OrderStore) *Handler {
+	return &Handler{store}
 }
 
 func (h *Handler) Routes() http.Handler {

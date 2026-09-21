@@ -42,25 +42,21 @@ func main() {
 	p1 := processor.NewPlaceOrderProcessor(db, inventoryStore, orderStore)
 	p2 := processor.NewPaymentProcessor()
 	p := processor.NewMultiProcessor(p1, p2)
-	q := domain.NewQueue(p, orderStore)
+	queue := domain.NewQueue(p, orderStore, time.Second)
+	dispatcher := domain.NewOutboxDispatcher(orderStore, queue)
 
 	// Start 3 workers
-	q.Start(ctx, 3)
+	queue.Start(ctx, 3)
 
-	// Before starting the HTTP server, we process any pending orders
-	pendingOrders, err := orderStore.GetPendingOrders(ctx)
-	if err != nil {
-		slog.Error("Failed to get pending orders", "error", err)
-		os.Exit(1)
-	}
-	for _, order := range pendingOrders {
-		if err := q.Submit(ctx, order); err != nil {
-			slog.Error("Failed to submit pending order", "order_id", order.ID, "error", err)
+	// Start the outbox dispatcher
+	go func() {
+		if err := dispatcher.Start(ctx, 500*time.Millisecond); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("Outbox dispatcher failed", "error", err)
 		}
-	}
+	}()
 
 	// Start HTTP server
-	handler := httpapi.NewHandler(q, orderStore)
+	handler := httpapi.NewHandler(orderStore)
 	srv := &http.Server{
 		Addr:    ":8080",
 		Handler: handler.Routes(),
@@ -80,6 +76,6 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Failed to shutdown server", "error", err)
 		}
-		q.Stop()
+		queue.Stop()
 	}
 }

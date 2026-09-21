@@ -2,13 +2,11 @@ package domain
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
-
-var ErrQueueClosed = errors.New("queue is closed")
 
 type Queue struct {
 	processor Processor
@@ -18,19 +16,22 @@ type Queue struct {
 	mu        sync.RWMutex
 	closed    bool
 	stopChan  chan struct{}
+	baseDelay time.Duration
 }
 
 type OrderStore interface {
 	Save(ctx context.Context, order *Order) error
 	Get(ctx context.Context, id OrderID) (*Order, error)
+	GetPendingOrders(ctx context.Context) ([]*Order, error)
 }
 
-func NewQueue(processor Processor, store OrderStore) *Queue {
+func NewQueue(processor Processor, store OrderStore, baseDelay time.Duration) *Queue {
 	return &Queue{
 		processor: processor,
 		store:     store,
 		orders:    make(chan *Order, 100), // Buffer size of 100
 		stopChan:  make(chan struct{}),
+		baseDelay: baseDelay,
 	}
 }
 
@@ -90,22 +91,50 @@ func (q *Queue) worker(ctx context.Context) {
 			order.Status = StatusRunning
 			_ = q.store.Save(ctx, order)
 
-			cleanup, err := q.processor.Process(ctx, order)
+			status, err := tryProcess(ctx, q, order)
 			if err != nil {
-				slog.Error("Failed to process order", "orderID", order.ID, "error", err)
-				// If processing fails, we attempt to cleanup and mark the order as failed
-				if cleanup != nil {
-					slog.Info("Attempting to cleanup after processing error", "orderID", order.ID)
-					if err := cleanup(); err != nil {
-						slog.Error("Failed to cleanup after processing error", "error", err)
-					}
-				}
-				order.Status = StatusFailed
-			} else {
-				order.Status = StatusCompleted
+				slog.Error("Order processing failed", "error", err, "orderID", order.ID)
 			}
+			order.Status = status
 
 			_ = q.store.Save(ctx, order)
 		}
+	}
+}
+
+func tryProcess(ctx context.Context, q *Queue, order *Order) (OrderStatus, error) {
+	for {
+		cleanup, err := q.processor.Process(ctx, order)
+		if err == nil {
+			return StatusCompleted, nil
+		}
+
+		// There was an error during processing, check if it's retryable
+		if IsRetryable(err) {
+			if order.Retries < order.MaxRetries {
+				order.Retries++
+				backoff := q.baseDelay * time.Duration(1<<order.Retries) // Exponential backoff
+
+				select {
+				case <-ctx.Done():
+					return StatusFailed, fmt.Errorf("processing canceled: %w", ctx.Err())
+				case <-time.After(backoff):
+					continue // Retry processing
+				}
+			} else {
+				slog.Error("Max retries reached for order", "orderID", order.ID)
+				return StatusDeadLetter, err
+			}
+		}
+
+		// The process was not retryable
+		slog.Error("Processing failed with non-retryable error", "error", err, "orderID", order.ID)
+		if cleanup != nil {
+			slog.Info("Attempting to cleanup after processing error", "orderID", order.ID)
+			if err := cleanup(); err != nil {
+				return StatusFailed, fmt.Errorf("cleanup failed after processing error: %w", err)
+			}
+		}
+		return StatusFailed, err
 	}
 }

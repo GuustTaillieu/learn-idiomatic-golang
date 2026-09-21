@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0021: The Transactional Outbox & Decoupled Dispatching</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0021: The Transactional Outbox & Decoupled Dispatching</h1>
+  <p><em>Target: Decouple HTTP ingestion from channel buffers completely using a continuous Outbox Dispatcher, achieving true 100% crash durability.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Retries & DLQ:</strong>
+    <ul>
+      <li>🎉 <strong>All tests passed!</strong> Both successful retry recovery and terminal exhaustion to <code>DEAD_LETTER</code> passed cleanly with zero race conditions.</li>
+      <li>⚡ <strong>Cancellation-Aware Backoff:</strong> Your <code>select</code> listens to <code>ctx.Done()</code> alongside <code>time.After(backoff)</code> so worker shutdown is never stalled during sleep.</li>
+      <li>💡 <strong>Senior Polish #1 (Loop vs Recursion):</strong> In Go, retries are conventionally written with an iterative <code>for</code> loop rather than recursive calls to avoid stack allocation.</li>
+      <li>💡 <strong>Senior Polish #2 (Configurable BaseDelay):</strong> In tests, <code>baseDelay = time.Second</code> made the test suite take 25 seconds. Making <code>baseDelay</code> a field on <code>Queue</code> allows tests to set <code>baseDelay = time.Millisecond</code> and run in 15ms!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Vulnerability in Direct HTTP Submission</h2>
+  <p>Look closely at how an order is created today in <code>handle_create_order.go</code>:</p>
+  <pre><code>order := domain.NewOrder(req.ItemID, req.Amount)
+
+// 1. Save to DB
+if err := h.store.Save(r.Context(), order); err != nil { ... }
+
+// 2. Submit to in-memory channel
+if err := h.queue.Submit(r.Context(), order); err != nil { ... }</code></pre>
+
+  <p>Think about what happens under extreme real-world load (e.g. Black Friday):</p>
+  <ol>
+    <li>Your channel buffer is <code>100</code>. Suddenly, 500 requests hit your HTTP API simultaneously.</li>
+    <li>Once the 100 slots in <code>q.orders</code> are full, <code>q.orders &lt;- order</code> <strong>blocks</strong>!</li>
+    <li>Now, 400 incoming HTTP requests are frozen, holding open TCP sockets, tying up database connections, and timing out clients.</li>
+    <li>If you restart the server, you rely on the startup sweeper to catch up. But while running, your HTTP ingestion is coupled to worker processing speed.</li>
+  </ol>
+
+  <h2>2. The Enterprise Solution: The Transactional Outbox</h2>
+  <p>How do Stripe, Uber, and high-scale systems decouple ingestion from processing?</p>
+
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>[Client] &rarr; (POST /orders) &rarr; [DB Transaction: INSERT order (PENDING)] &rarr; Returns 202 Accepted!</code></p>
+    <p>&darr; <em>(Completely decoupled in background)</em></p>
+    <p><code>[Outbox Dispatcher Goroutine] &rarr; Polls DB for PENDING &rarr; Pushes to Worker Queue &rarr; Updates to DISPATCHED</code></p>
+  </div>
+
+  <p><strong>The Architectural Superpowers:</strong></p>
+  <ul>
+    <li><strong>Zero Ingestion Latency:</strong> The HTTP handler only inserts one row into SQLite and immediately returns <code>202 StatusAccepted</code>. It never blocks on channel capacity or slow workers!</li>
+    <li><strong>True Durability:</strong> Even if workers are completely offline or 10,000 orders arrive at once, every single order is safe on disk in the database.</li>
+    <li><strong>Crash Resilient by Design:</strong> If the server restarts, crashes, or scales up, the Outbox Dispatcher simply resumes reading from the database. No special boot-sweeper needed!</li>
+  </ul>
+
+  <h2>3. Building the Outbox Dispatcher in Go</h2>
+  <p>A background dispatcher in Go uses a <code>time.Ticker</code> and a cancellation <code>select</code>:</p>
+  <pre><code>func (d *OutboxDispatcher) Start(ctx context.Context) {
+    ticker := time.NewTicker(500 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            d.dispatchBatch(ctx)
+        }
+    }
+}</code></pre>
+
+  <p>Inside <code>dispatchBatch</code>:</p>
+  <ol>
+    <li>Fetch up to $N$ orders with <code>status = 'PENDING'</code> (e.g. <code>LIMIT 50</code>).</li>
+    <li>For each order:
+      <ul>
+        <li>Push into <code>queue.Submit</code> (or mark <code>StatusRunning</code> / <code>StatusDispatched</code>).</li>
+      </ul>
+    </li>
+  </ol>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build the Outbox Dispatcher</h3>
+    <ol>
+      <li><strong>Test Speedup (Optional but recommended):</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/queue.go"><code>internal/domain/queue.go</code></a>, make <code>baseDelay</code> configurable or set it to <code>10 * time.Millisecond</code> so tests finish in under 1 second!</li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/queue.go"><code>internal/domain/queue.go</code></a> (or a new dispatcher package):
+        Create an <code>OutboxDispatcher</code>:
+        <pre><code>type OutboxDispatcher struct {
+    store OrderStore
+    queue *Queue
+}
+
+func NewOutboxDispatcher(store OrderStore, queue *Queue) *OutboxDispatcher
+func (d *OutboxDispatcher) Start(ctx context.Context, interval time.Duration)
+func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error</code></pre>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        Start the <code>OutboxDispatcher</code> in a goroutine with the server context!
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handle_create_order.go"><code>internal/httpapi/handle_create_order.go</code></a>:
+        Notice that the HTTP handler now only needs to save the order to the database! The background dispatcher handles feeding the queue automatically.
+      </li>
+      <li>Write a test verifying that an order saved to the store with status <code>PENDING</code> is automatically picked up by the dispatcher and processed to <code>COMPLETED</code> by the queue!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0020-retries-exponential-backoff-and-dead-letter-queues.html">Previous: Lesson 0020</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

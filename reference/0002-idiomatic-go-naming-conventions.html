@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Idiomatic Go Naming Conventions</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Idiomatic Go Naming Conventions</h1>
+  <p><em>The mental models and rules of thumb for naming variables, receivers, packages, and interfaces in Go.</em></p>
+
+  <h2>1. The Golden Rule of Go Naming</h2>
+  <blockquote>
+    <em>"The greater the distance between a name's declaration and its uses, the longer the name should be."</em><br>
+    — <strong>Rob Pike</strong> (Co-designer of Go)
+  </blockquote>
+  <ul>
+    <li><strong>Tiny Scope (1–5 lines):</strong> Short, single-letter names convey high density and reduce visual noise (e.g. <code>i</code>, <code>err</code>, <code>o</code>, <code>r</code>, <code>w</code>).</li>
+    <li><strong>Medium Scope (10–30 lines):</strong> Descriptive single words (e.g. <code>order</code>, <code>stock</code>, <code>payload</code>).</li>
+    <li><strong>Broad/Package Scope (Exported identifiers):</strong> Fully descriptive, precise names (e.g. <code>OutboxDispatcher</code>, <code>ErrInsufficientStock</code>).</li>
+  </ul>
+
+  <h2>2. Method Receiver Names</h2>
+  <p>In Go, method receivers are <strong>not</strong> called <code>this</code> or <code>self</code>.</p>
+  <ul>
+    <li>Use <strong>1 or 2 letters</strong> representing the type:
+      <ul>
+        <li><code>func (s *OrderSqliteStore) Save(...)</code> &rarr; <code>s</code> for Store.</li>
+        <li><code>func (q *Queue) Submit(...)</code> &rarr; <code>q</code> for Queue.</li>
+        <li><code>func (h *Handler) Routes(...)</code> &rarr; <code>h</code> for Handler.</li>
+        <li><code>func (p *PlaceOrderProcessor) Process(...)</code> &rarr; <code>p</code> for Processor.</li>
+      </ul>
+    </li>
+    <li><strong>Rule of Consistency:</strong> Never use <code>s</code> in one method of a struct and <code>store</code> in another. Pick one and use it across the entire file.</li>
+  </ul>
+
+  <h2>3. Avoiding "Stutter" in Package & Type Names</h2>
+  <p>Callers always use a symbol with its package prefix: <code>package.Symbol</code>.</p>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 1rem 0;">
+    <thead>
+      <tr style="background-color: #2b2b2b; color: #fff;">
+        <th>Non-Idiomatic (Stuttering)</th>
+        <th>Idiomatic Go</th>
+        <th>Caller Usage</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>store.OrderStore</code></td>
+        <td><code>store.Order</code> or <code>store.SQLite</code></td>
+        <td><code>store.SQLite</code> (reads as "store's SQLite implementation")</td>
+      </tr>
+      <tr>
+        <td><code>httpapi.HTTPHandler</code></td>
+        <td><code>httpapi.Handler</code></td>
+        <td><code>httpapi.Handler</code></td>
+      </tr>
+      <tr>
+        <td><code>domain.DomainOrder</code></td>
+        <td><code>domain.Order</code></td>
+        <td><code>domain.Order</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. Standard Canonical Abbreviations</h2>
+  <ul>
+    <li><code>ctx</code>: <code>context.Context</code> (always the first parameter).</li>
+    <li><code>err</code>: <code>error</code> (always the last return value).</li>
+    <li><code>w</code>: <code>http.ResponseWriter</code> or <code>io.Writer</code>.</li>
+    <li><code>r</code>: <code>*http.Request</code> or <code>io.Reader</code>.</li>
+    <li><code>mu</code>: <code>sync.Mutex</code> or <code>sync.RWMutex</code>.</li>
+    <li><code>wg</code>: <code>sync.WaitGroup</code>.</li>
+    <li><code>req</code> / <code>res</code>: HTTP or RPC request and response structs.</li>
+    <li><code>tx</code>: <code>*sql.Tx</code> (database transaction).</li>
+  </ul>
+
+  <h2>5. When is a Name "Too Short"?</h2>
+  <p>A name is too short when:</p>
+  <ol>
+    <li><strong>Multiple concepts collide:</strong> If a function takes an <code>OrderStore</code> and a <code>Stock</code>, naming both <code>s</code> causes confusion. Use <code>store</code> and <code>stock</code> instead!</li>
+    <li><strong>Distance is large:</strong> If a variable is declared on line 12 and referenced on line 55, a 1-letter name forces the reader to scroll up. Give it a descriptive name like <code>pendingOrders</code>.</li>
+  </ol>
+
+  <div class="footer">
+    <p>Part of the <a href="../MISSION.md">Idiomatic Go Mission</a>. Ask Antigravity anytime you need clarification.</p>
+  </div>
+
+</body>
+</html>

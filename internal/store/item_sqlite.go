@@ -8,11 +8,11 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
-type ItemSQLiteStore struct {
+type ItemSQLite struct {
 	db *sql.DB
 }
 
-func NewItemSQLiteStore(db *sql.DB) (*ItemSQLiteStore, error) {
+func NewItemSQLiteStore(db *sql.DB) (*ItemSQLite, error) {
 	query := `
 		CREATE TABLE IF NOT EXISTS items (
 			id TEXT PRIMARY KEY,
@@ -21,10 +21,10 @@ func NewItemSQLiteStore(db *sql.DB) (*ItemSQLiteStore, error) {
 	if _, err := db.Exec(query); err != nil {
 		return nil, err
 	}
-	return &ItemSQLiteStore{db: db}, nil
+	return &ItemSQLite{db: db}, nil
 }
 
-func (s *ItemSQLiteStore) Save(ctx context.Context, item *domain.Item) error {
+func (s *ItemSQLite) Save(ctx context.Context, item *domain.Item) error {
 	query := `
 		INSERT INTO items (id, name)
 		VALUES (?, ?)
@@ -37,7 +37,7 @@ func (s *ItemSQLiteStore) Save(ctx context.Context, item *domain.Item) error {
 	return nil
 }
 
-func (s *ItemSQLiteStore) Get(ctx context.Context, id domain.ItemID) (*domain.Item, error) {
+func (s *ItemSQLite) Get(ctx context.Context, id domain.ItemID) (*domain.Item, error) {
 	query := `
 		SELECT id, name
 		FROM items

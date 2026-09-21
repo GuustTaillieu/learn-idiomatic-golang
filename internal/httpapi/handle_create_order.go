@@ -24,11 +24,6 @@ func (h *Handler) handleCreateorder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to save order", http.StatusInternalServerError)
 		return
 	}
-	err := h.queue.Submit(r.Context(), order)
-	if err != nil {
-		http.Error(w, "Failed to submit order", http.StatusInternalServerError)
-		return
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

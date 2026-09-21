@@ -4,38 +4,40 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 	"uuid"
 )
 
-var ErrOrderNotFound = errors.New("order not found")
-
 type OrderStatus string
 
 const (
-	StatusPending   OrderStatus = "PENDING"
-	StatusRunning   OrderStatus = "RUNNING"
-	StatusCompleted OrderStatus = "COMPLETED"
-	StatusFailed    OrderStatus = "FAILED"
+	StatusPending    OrderStatus = "PENDING"
+	StatusRunning    OrderStatus = "RUNNING"
+	StatusCompleted  OrderStatus = "COMPLETED"
+	StatusFailed     OrderStatus = "FAILED"
+	StatusDeadLetter OrderStatus = "DEAD_LETTER"
 )
 
 type Order struct {
-	ID        OrderID
-	ItemID    ItemID
-	Amount    int
-	Status    OrderStatus
-	CreatedAt time.Time
+	ID         OrderID
+	ItemID     ItemID
+	Amount     int
+	Status     OrderStatus
+	Retries    int
+	MaxRetries int
+	CreatedAt  time.Time
 }
 
 func NewOrder(itemID ItemID, amount int) *Order {
 	return &Order{
-		ID:        OrderID(uuid.New()),
-		ItemID:    itemID,
-		Amount:    amount,
-		Status:    StatusPending,
-		CreatedAt: time.Now(),
+		ID:         OrderID(uuid.New()),
+		ItemID:     itemID,
+		Amount:     amount,
+		Status:     StatusPending,
+		Retries:    0,
+		MaxRetries: 3,
+		CreatedAt:  time.Now(),
 	}
 }
 

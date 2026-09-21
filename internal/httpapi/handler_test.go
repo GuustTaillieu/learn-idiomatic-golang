@@ -10,15 +10,12 @@ import (
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi"
-	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
 	"github.com/GuustTaillieu/idiomatic-go/internal/store"
 )
 
 func TestHandler_GetOrderRoute(t *testing.T) {
-	p := processor.NewPaymentProcessor()
 	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s)
-	handler := httpapi.NewHandler(q, s)
+	handler := httpapi.NewHandler(s)
 
 	// Pre-populate the store with a order
 	item := domain.NewItem("payload")
@@ -30,6 +27,7 @@ func TestHandler_GetOrderRoute(t *testing.T) {
 
 	handler.Routes().ServeHTTP(rec, req)
 
+	// Assert
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status code 200, got %d", rec.Code)
 	}
@@ -48,10 +46,9 @@ func TestHandler_GetOrderRoute(t *testing.T) {
 }
 
 func TestHandler_CreateOrderRoute(t *testing.T) {
-	p := processor.NewPaymentProcessor()
+	// Arrange
 	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s)
-	handler := httpapi.NewHandler(q, s)
+	handler := httpapi.NewHandler(s)
 
 	fakeItem := domain.NewItem("payload")
 	reqBody := fmt.Sprintf(`{"item_id": "%s"}`, fakeItem.ID)
@@ -59,8 +56,10 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 	req := httptest.NewRequest("POST", "/orders", body)
 	rec := httptest.NewRecorder()
 
+	// Act
 	handler.Routes().ServeHTTP(rec, req)
 
+	// Assert
 	if rec.Code != http.StatusCreated {
 		t.Errorf("Expected status code 201, got %d", rec.Code)
 	}
@@ -72,5 +71,8 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 
 	if result.ItemID != fakeItem.ID {
 		t.Errorf("Expected order item ID %s, got %s", fakeItem.ID, result.ItemID)
+	}
+	if result.Status != domain.StatusPending {
+		t.Errorf("Expected order status %s, got %s", domain.StatusPending, result.Status)
 	}
 }

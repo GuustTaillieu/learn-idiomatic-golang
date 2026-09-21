@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0022: Production Observability, Slog Context, & Health Checks</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0022: Production Observability, Slog Context, & Health Checks</h1>
+  <p><em>Target: Transform your concurrent microservice into a cloud-native production service with structured logging context and Kubernetes-style health probes (/healthz & /readyz).</em></p>
+
+  <div class="callout">
+    <strong>Milestone Review: The Outbox Pattern is Complete!</strong>
+    <ul>
+      <li>🎉 <strong>All tests passing in under 5 seconds with 0 data races!</strong></li>
+      <li>✨ <strong>Decoupled Ingestion:</strong> The HTTP handler only inserts into SQLite and returns <code>201 Created</code> instantly without blocking on worker channel capacity.</li>
+      <li>🚀 <strong>Asynchronous Dispatcher:</strong> <code>OutboxDispatcher</code> continuously feeds the queue in the background.</li>
+      <li>📚 <strong>New Reference Guide:</strong> Check out <a href="../reference/0002-idiomatic-go-naming-conventions.html">Reference: Idiomatic Go Naming Conventions</a> for rules of thumb on <code>s</code> vs descriptive names!</li>
+    </ul>
+  </div>
+
+  <h2>1. Answering Your Question: Is <code>s</code> Really How People Name in Go?</h2>
+  <p><strong>Yes, absolutely!</strong> In Go, method receivers are almost always 1 or 2 letters:</p>
+  <ul>
+    <li><code>func (s *OrderSqliteStore) Save(...)</code> &rarr; <code>s</code> for Store.</li>
+    <li><code>func (q *Queue) Submit(...)</code> &rarr; <code>q</code> for Queue.</li>
+    <li><code>func (h *Handler) Routes(...)</code> &rarr; <code>h</code> for Handler.</li>
+  </ul>
+  <p><strong>Why?</strong> In languages like Java or C#, you type <code>this.orderStore.save(...)</code>. In Go, the receiver name is intentionally tiny because every method already lives inside that type's namespace! Having <code>s.db</code> or <code>q.orders</code> is concise and reduces reading fatigue.</p>
+  <p><strong>When should a name be longer?</strong> Follow Rob Pike's golden rule: <em>Length is proportional to scope</em>. A variable used across 30 lines should be <code>pendingOrders</code>, while an iterator variable in a 2-line loop is simply <code>order</code> or <code>o</code>.</p>
+
+  <h2>2. Production Health Checks: <code>/healthz</code> vs <code>/readyz</code></h2>
+  <p>In cloud deployments (Kubernetes, AWS ECS, GCP Cloud Run), your container needs to communicate its status to load balancers:</p>
+  
+  <div style="display: flex; gap: 1rem; margin: 1.5rem 0;">
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #61afef; margin-top: 0;">1. Liveness (<code>GET /healthz</code>)</h3>
+      <p><strong>Question:</strong> "Is the process alive or deadlocked?"</p>
+      <p>If the Go server is running and can respond to HTTP, return <code>200 OK</code>. If it hangs or deadlocks, the load balancer kills and restarts the container.</p>
+    </div>
+
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #98c379; margin-top: 0;">2. Readiness (<code>GET /readyz</code>)</h3>
+      <p><strong>Question:</strong> "Can the process actually do work right now?"</p>
+      <p>Checks downstream dependencies: e.g. <code>db.PingContext(ctx)</code>. If the database is locked or migrating, return <code>503 Service Unavailable</code> so traffic is paused without killing the app!</p>
+    </div>
+  </div>
+
+  <h2>3. Contextual Structured Logging with <code>slog.With</code></h2>
+  <p>Instead of manually typing <code>"order_id", order.ID</code> in every single log statement throughout a function, senior Go engineers create a <strong>contextual logger</strong>:</p>
+  <pre><code>// Create a logger scoped to this specific order:
+logger := slog.With(
+    slog.String("order_id", order.ID.String()),
+    slog.String("item_id", order.ItemID.String()),
+)
+
+// Now every downstream log automatically includes order_id and item_id!
+logger.Info("validating stock")
+logger.Info("contacting payment gateway")
+logger.Error("payment failed", "error", err)</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build Health Probes</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handler.go"><code>internal/httpapi/handler.go</code></a>:
+        <ul>
+          <li>Add an interface for health checking:
+            <pre><code>type HealthChecker interface {
+    Ping(ctx context.Context) error
+}</code></pre>
+          </li>
+          <li>Accept an optional <code>HealthChecker</code> (or pass your <code>*sql.DB</code> / store) into <code>NewHandler</code>.</li>
+          <li>Register routes in <code>Routes()</code>:
+            <ul>
+              <li><code>GET /healthz</code>: returns <code>200 OK {"status": "alive"}</code>.</li>
+              <li><code>GET /readyz</code>: calls <code>checker.Ping(ctx)</code>. If <code>nil</code>, returns <code>200 OK {"status": "ready"}</code>. If error, returns <code>503 Service Unavailable</code>!</li>
+            </ul>
+          </li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handler_test.go"><code>internal/httpapi/handler_test.go</code></a>:
+        Write two quick tests:
+        <ul>
+          <li><code>TestHandler_Healthz</code>: verifies <code>GET /healthz</code> returns 200.</li>
+          <li><code>TestHandler_Readyz</code>: verifies <code>GET /readyz</code> returns 200 on healthy database, and 503 on disconnected database.</li>
+        </ul>
+      </li>
+      <li>Run your test suite:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0021-the-transactional-outbox-and-decoupled-dispatching.html">Previous: Lesson 0021</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

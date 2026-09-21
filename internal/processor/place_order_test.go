@@ -130,7 +130,7 @@ func TestPlaceOrderProcessor_Process_ConcurrentOrders(t *testing.T) {
 	}
 }
 
-func getDefaults(t *testing.T) (*sql.DB, *store.ItemSQLiteStore, *store.InventorySQLiteStore, *store.OrderSqliteStore) {
+func getDefaults(t *testing.T) (*sql.DB, *store.ItemSQLite, *store.InventorySQLite, *store.OrderSqlite) {
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
