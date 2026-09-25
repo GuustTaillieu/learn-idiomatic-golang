@@ -3,9 +3,10 @@ package domain
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
 type Queue struct {
@@ -33,6 +34,18 @@ func NewQueue(processor Processor, store OrderStore, baseDelay time.Duration) *Q
 		stopChan:  make(chan struct{}),
 		baseDelay: baseDelay,
 	}
+}
+
+func (q *Queue) Ping(ctx context.Context) error {
+	// Check if the the channel is open for new orders
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	if q.closed {
+		return ErrQueueClosed
+	}
+
+	return nil
 }
 
 func (q *Queue) Submit(ctx context.Context, order *Order) error {
@@ -88,12 +101,15 @@ func (q *Queue) worker(ctx context.Context) {
 			if !ok {
 				return
 			}
+			log := lib.Logger(ctx).With("orderID", order.ID, "itemID", order.ItemID)
+			ctx = lib.ContextWithLogger(ctx, log)
+
 			order.Status = StatusRunning
 			_ = q.store.Save(ctx, order)
 
 			status, err := tryProcess(ctx, q, order)
 			if err != nil {
-				slog.Error("Order processing failed", "error", err, "orderID", order.ID)
+				lib.Logger(ctx).Error("processing failed", "error", err)
 			}
 			order.Status = status
 
@@ -122,15 +138,15 @@ func tryProcess(ctx context.Context, q *Queue, order *Order) (OrderStatus, error
 					continue // Retry processing
 				}
 			} else {
-				slog.Error("Max retries reached for order", "orderID", order.ID)
+				lib.Logger(ctx).Error("Max retries reached for order", "orderID", order.ID)
 				return StatusDeadLetter, err
 			}
 		}
 
 		// The process was not retryable
-		slog.Error("Processing failed with non-retryable error", "error", err, "orderID", order.ID)
+		lib.Logger(ctx).Error("Processing failed with non-retryable error", "error", err, "orderID", order.ID)
 		if cleanup != nil {
-			slog.Info("Attempting to cleanup after processing error", "orderID", order.ID)
+			lib.Logger(ctx).Info("Attempting to cleanup after processing error", "orderID", order.ID)
 			if err := cleanup(); err != nil {
 				return StatusFailed, fmt.Errorf("cleanup failed after processing error: %w", err)
 			}

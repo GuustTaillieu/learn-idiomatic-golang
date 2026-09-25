@@ -13,7 +13,9 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	healthchecker "github.com/GuustTaillieu/idiomatic-go/internal/healthchecker"
 	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi"
+	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi/middleware"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
 	"github.com/GuustTaillieu/idiomatic-go/internal/store"
 )
@@ -45,6 +47,8 @@ func main() {
 	queue := domain.NewQueue(p, orderStore, time.Second)
 	dispatcher := domain.NewOutboxDispatcher(orderStore, queue)
 
+	healthChecker := healthchecker.NewMultiHealthChecker(store.NewDBHealthChecker(db), queue)
+
 	// Start 3 workers
 	queue.Start(ctx, 3)
 
@@ -56,10 +60,11 @@ func main() {
 	}()
 
 	// Start HTTP server
-	handler := httpapi.NewHandler(orderStore)
+	httpHandler := httpapi.NewHandler(orderStore, healthChecker).Routes()
+	httpHandler = middleware.RequestIDMiddleware(httpHandler)
 	srv := &http.Server{
 		Addr:    ":8080",
-		Handler: handler.Routes(),
+		Handler: httpHandler,
 	}
 
 	go func() {

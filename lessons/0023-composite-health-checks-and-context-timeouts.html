@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0023: Deep Health Checks & The Composite Health Pattern</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0023: Deep Health Checks & The Composite Health Pattern</h1>
+  <p><em>Target: Evaluate queue-based health checks vs. database probes, and master composite health checking with context timeouts.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Implementation:</strong>
+    <ul>
+      <li>🎉 <strong>All tests passing!</strong> <code>GET /healthz</code> and <code>GET /readyz</code> routes are working cleanly.</li>
+      <li>✨ <strong>Interface Decoupling:</strong> In <code>handler.go</code>, <code>type HealthChecker interface { Ping(ctx context.Context) error }</code> perfectly decouples your HTTP API from whatever does the checking!</li>
+      <li>🤔 <strong>Your Question:</strong> <em>"I turned the Queue into the health checker.. idk if that was a good option?"</em> Let's analyze it!</li>
+    </ul>
+  </div>
+
+  <h2>1. Is Turning the Queue into the Health Checker a Good Option?</h2>
+  <p><strong>The Good:</strong></p>
+  <ul>
+    <li>It verifies that the queue is not closed (<code>q.closed == false</code>). If the service is shutting down (graceful shutdown in progress), <code>Ping()</code> returns <code>ErrQueueClosed</code>, signaling load balancers to stop sending new traffic! That is a great senior intuition.</li>
+  </ul>
+
+  <p><strong>The Blind Spot:</strong></p>
+  <ul>
+    <li>When a client sends <code>POST /orders</code>, what is the very first thing the server touches? <strong>The Database!</strong> (<code>h.store.Save(ctx, order)</code>).</li>
+    <li>If the SQLite file is locked, the disk is full, or the database connection is broken:
+      <ul>
+        <li><code>queue.Ping()</code> will happily return <code>nil</code> (because in-memory RAM mutexes are fine).</li>
+        <li><code>GET /readyz</code> will report <code>200 OK ("ready")</code>.</li>
+        <li>Load balancers will keep sending users to this server pod, and <strong>100% of customer orders will crash with HTTP 500</strong>!</li>
+      </ul>
+    </li>
+  </ul>
+
+  <h2>2. The Gold Standard: The Composite Health Checker</h2>
+  <p>Why choose between checking the Queue or checking the Database when you can check <strong>both</strong>?</p>
+  <p>Remember how we used the <strong>Composite Pattern</strong> for <code>MultiProcessor</code>? We can use the exact same pattern for health checks!</p>
+
+  <pre><code>type MultiHealthChecker struct {
+    checkers []HealthChecker
+}
+
+func NewMultiHealthChecker(checkers ...HealthChecker) *MultiHealthChecker {
+    return &MultiHealthChecker{checkers: checkers}
+}
+
+func (m *MultiHealthChecker) Ping(ctx context.Context) error {
+    for _, c := range m.checkers {
+        if err := c.Ping(ctx); err != nil {
+            return err // Fails fast if ANY critical dependency is down!
+        }
+    }
+    return nil
+}</code></pre>
+
+  <p>And for the database, a tiny adapter struct:</p>
+  <pre><code>type DBHealthChecker struct {
+    db *sql.DB
+}
+
+func (d *DBHealthChecker) Ping(ctx context.Context) error {
+    return d.db.PingContext(ctx)
+}</code></pre>
+
+  <h2>3. The Timeout Rule for Health Probes</h2>
+  <p>In cloud deployments, health probes run every few seconds. If a database hangs, you must not let <code>GET /readyz</code> hang indefinitely holding open sockets.</p>
+  <p>Senior Go health handlers always enforce a strict timeout:</p>
+  <pre><code>func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
+    // 💡 Enforce a 2-second deadline on dependency checks:
+    ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+    defer cancel()
+
+    if err := h.healthChecker.Ping(ctx); err != nil {
+        http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+        return
+    }
+    // ...
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handle_health.go"><code>internal/httpapi/handle_health.go</code></a>:
+        Wrap <code>r.Context()</code> with a <code>context.WithTimeout(..., 2*time.Second)</code> in <code>handleReady</code>.
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        Create a <code>DBHealthChecker</code> (or <code>MultiHealthChecker</code>) so <code>/readyz</code> checks both SQLite (<code>db.PingContext</code>) and the queue!
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/handler_test.go"><code>internal/httpapi/handler_test.go</code></a>:
+        Add a test: <code>TestHandler_Readyz_Unhealthy</code> that passes a failing mock health checker and asserts that the HTTP response code is <code>503 Service Unavailable</code>!
+      </li>
+      <li>Run your test suite:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0022-observability-slog-and-health-checks.html">Previous: Lesson 0022</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

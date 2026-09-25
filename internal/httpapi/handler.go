@@ -7,6 +7,10 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
+type HealthChecker interface {
+	Ping(ctx context.Context) error
+}
+
 type Queue interface {
 	Submit(ctx context.Context, order *domain.Order) error
 }
@@ -17,11 +21,12 @@ type OrderStore interface {
 }
 
 type Handler struct {
-	store OrderStore
+	store         OrderStore
+	healthChecker HealthChecker
 }
 
-func NewHandler(store OrderStore) *Handler {
-	return &Handler{store}
+func NewHandler(store OrderStore, healthChecker HealthChecker) *Handler {
+	return &Handler{store, healthChecker}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -29,6 +34,8 @@ func (h *Handler) Routes() http.Handler {
 
 	mux.HandleFunc("POST /orders", h.handleCreateorder)
 	mux.HandleFunc("GET /orders/{id}", h.handleGetorder)
+	mux.HandleFunc("GET /healthz", h.handleHealth)
+	mux.HandleFunc("GET /readyz", h.handleReady)
 
 	return mux
 }

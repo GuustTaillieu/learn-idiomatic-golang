@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0024: Request-Scoped Structured Logging (slog) & Correlation IDs</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0024: Request-Scoped Structured Logging (<code>slog</code>) & Correlation IDs</h1>
+  <p><em>Target: Learn how senior Go teams handle logging: dependency injection vs. context-propagation, and implement request-scoped correlation IDs.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Health Checker:</strong>
+    <ul>
+      <li>🎉 <strong>All tests passing!</strong> You implemented <code>MultiHealthChecker</code> and verified <code>503 Service Unavailable</code> when a check fails!</li>
+      <li>⏱️ <strong>Deadline Enforced:</strong> <code>context.WithTimeout(r.Context(), 2*time.Second)</code> guarantees your probes never hang.</li>
+      <li>🤔 <strong>Your Question:</strong> <em>"How should I implement the logger? Put the logger in context or put it as a dependency everywhere.. or?"</em></li>
+    </ul>
+  </div>
+
+  <h2>1. The 3 Approaches to Logging in Go</h2>
+
+  <div style="display: flex; flex-direction: column; gap: 1rem; margin: 1.5rem 0;">
+    <div style="border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #e06c75; margin-top: 0;">Approach 1: Inject <code>*slog.Logger</code> into every struct</h3>
+      <p><code>type Queue struct { logger *slog.Logger }</code></p>
+      <p><strong>Verdict:</strong> Great for static component logging, but <em>terrible</em> for request-scoped fields. If a logger lives on <code>Queue</code>, it cannot automatically know which <code>order_id</code> or <code>request_id</code> is being processed on worker goroutine #3!</p>
+    </div>
+
+    <div style="border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #e5c07b; margin-top: 0;">Approach 2: Global <code>slog.Default()</code> with manual args</h3>
+      <p><code>slog.Info("processing", "order_id", order.ID)</code></p>
+      <p><strong>Verdict:</strong> Repetitive and error-prone. You have to remember to type <code>"order_id", order.ID</code> on every single line across 15 different functions.</p>
+    </div>
+
+    <div style="border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #98c379; margin-top: 0;">Approach 3 (The Gold Standard): Context-Scoped Logger</h3>
+      <p>Attach a logger enriched with request metadata to <code>ctx</code> at the boundary (HTTP middleware or worker loop). Any function taking <code>ctx</code> automatically inherits the fields!</p>
+    </div>
+  </div>
+
+  <h2>2. The Context-Scoped Logger Pattern in Go</h2>
+  <p>Just like you did with <code>lib.WithTx(ctx, tx)</code>, we can create a clean logger helper in <code>internal/lib/logger.go</code>:</p>
+
+  <pre><code>package lib
+
+import (
+    "context"
+    "log/slog"
+)
+
+type loggerKey struct{}
+
+// ContextWithLogger embeds an enriched logger into context.
+func ContextWithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+    return context.WithValue(ctx, loggerKey{}, logger)
+}
+
+// Logger retrieves the logger from context, falling back to slog.Default().
+func Logger(ctx context.Context) *slog.Logger {
+    if l, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok {
+        return l
+    }
+    return slog.Default()
+}</code></pre>
+
+  <p><strong>Why this is brilliant:</strong></p>
+  <ol>
+    <li><strong>Zero Nil Panics:</strong> If a function receives a plain <code>context.Background()</code>, <code>lib.Logger(ctx)</code> safely falls back to <code>slog.Default()</code>.</li>
+    <li><strong>Clean Signatures:</strong> You don't have to add <code>logger *slog.Logger</code> to struct constructors or function parameters. <code>ctx</code> is already passed everywhere!</li>
+    <li><strong>Automatic Context Enrichment:</strong> When a worker starts processing an order:
+      <pre><code>log := slog.With("order_id", order.ID.String(), "item_id", order.ItemID.String())
+ctx = lib.ContextWithLogger(ctx, log)
+
+// Now inside PaymentProcessor, ReserveStock, etc.:
+lib.Logger(ctx).Info("reserving stock")
+// Output automatically has order_id and item_id attached!</code></pre>
+    </li>
+  </ol>
+
+  <h2>3. The HTTP Correlation ID Middleware</h2>
+  <p>In microservices, when a customer hits <code>POST /orders</code>, we attach a <strong>Request ID</strong> so we can trace that single request through the entire system:</p>
+
+  <pre><code>func RequestIDMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        requestID := r.Header.Get("X-Request-ID")
+        if requestID == "" {
+            requestID = uuid.New().String()
+        }
+
+        w.Header().Set("X-Request-ID", requestID)
+
+        // Enrich the logger for this entire HTTP request:
+        logger := slog.With("request_id", requestID)
+        ctx := lib.ContextWithLogger(r.Context(), logger)
+
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Wire Contextual Logging</h3>
+    <ol>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/logger.go"><code>internal/lib/logger.go</code></a>:
+        Implement <code>ContextWithLogger(ctx, logger)</code> and <code>Logger(ctx)</code>.
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/queue.go"><code>internal/domain/queue.go</code></a>:
+        In <code>worker</code>, before calling <code>tryProcess</code>, create an enriched logger with the order metadata:
+        <pre><code>orderLogger := slog.With("order_id", order.ID.String(), "item_id", order.ItemID.String())
+orderCtx := lib.ContextWithLogger(ctx, orderLogger)</code></pre>
+        Pass <code>orderCtx</code> to <code>tryProcess</code> and replace direct <code>slog.Error/Info</code> with <code>lib.Logger(ctx).Info(...)</code>.
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/httpapi/middleware.go"><code>internal/httpapi/middleware.go</code></a>:
+        Implement <code>RequestIDMiddleware</code> and wrap your router in <code>Routes()</code>.
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0023-composite-health-checks-and-context-timeouts.html">Previous: Lesson 0023</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | Reference: <a href="../reference/0001-concurrency-primitives-cheat-sheet.html">Concurrency Cheat Sheet</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
