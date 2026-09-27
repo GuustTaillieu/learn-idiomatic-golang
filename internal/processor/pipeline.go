@@ -7,15 +7,15 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
-type MultiProcessor struct {
-	processors []domain.Processor
+type Pipeline struct {
+	processors []domain.Processer
 }
 
-func NewMultiProcessor(processors ...domain.Processor) *MultiProcessor {
-	return &MultiProcessor{processors: processors}
+func NewPipeline(processors ...domain.Processer) *Pipeline {
+	return &Pipeline{processors: processors}
 }
 
-func (m *MultiProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (m *Pipeline) Process(ctx context.Context, order *domain.Order) (func() error, error) {
 	rollbackFuncs := make([]func() error, 0, len(m.processors))
 
 	rollbackAll := func() error {

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0025: Parallel Fan-Out with errgroup & Functional Options</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0025: Parallel Fan-Out with <code>errgroup</code> & Functional Options</h1>
+  <p><em>Target: Learn the canonical Functional Options idiom and master production parallel fan-out concurrency with coordinated error cancellation using <code>errgroup</code>.</em></p>
+
+  <div class="callout">
+    <strong>Mind-Blowing Discovery: You Reinvented the Functional Options Pattern!</strong>
+    <p>What you wrote in <code>internal/domain/item.go</code> (<code>optsFunc</code>, <code>WithID</code>, <code>WithCreatedAt</code>, <code>NewItem(name, ...optsFunc)</code>) is literally one of the most famous design patterns in the entire Go language: <strong>The Functional Options Pattern</strong>, invented by Go co-designer Rob Pike and popularized by Dave Cheney!</p>
+    <p>You independently arrived at the same design pattern used by Google, HashiCorp, and Kubernetes.</p>
+  </div>
+
+  <h2>1. Senior Refinement of Your Functional Options Pattern</h2>
+  <p>In <code>item.go</code>, you created an intermediary <code>Opts</code> struct and embedded it in <code>Item</code>:</p>
+  <pre><code>type Opts struct { ID ItemID; Name string; CreatedAt time.Time }
+type Item struct { Opts }
+type optsFunc func(*Opts)</code></pre>
+
+  <p>In senior Go, you can make this even simpler and cleaner by <strong>mutating the target struct pointer directly</strong>:</p>
+
+  <pre><code>type Item struct {
+    ID        ItemID
+    Name      string
+    CreatedAt time.Time
+}
+
+// 1. The option signature modifies *Item directly:
+type ItemOption func(*Item)
+
+// 2. Option helpers:
+func WithID(id ItemID) ItemOption {
+    return func(i *Item) {
+        i.ID = id
+    }
+}
+
+func WithCreatedAt(t time.Time) ItemOption {
+    return func(i *Item) {
+        i.CreatedAt = t
+    }
+}
+
+// 3. Constructor with sensible defaults:
+func NewItem(name string, opts ...ItemOption) *Item {
+    item := &Item{
+        ID:        ItemID(uuid.New()),
+        Name:      name,
+        CreatedAt: time.Now(),
+    }
+    for _, opt := range opts {
+        opt(item)
+    }
+    return item
+}</code></pre>
+
+  <p><strong>Benefits:</strong> Zero intermediary structs, no embedding noise, and you can access <code>item.Name</code> and <code>item.ID</code> directly!</p>
+  <p><em>(Also note a tiny bug in your previous code: in <code>defaultOpts</code>, line 31 had <code>Name: ""</code> instead of <code>Name: name</code>!).</em></p>
+  <p>Check out the new cheat sheet: <a href="../reference/0003-functional-options-pattern.html">Reference: The Functional Options Pattern</a>.</p>
+
+  <h2>2. Production Concurrency Weapon: Parallel Fan-Out with <code>errgroup</code></h2>
+  <p>You asked: <em>"Show me real senior golang tricks that make Go unique, fast, and safe in actual production!"</em></p>
+  <p>Here is one of the most widely used concurrency tools in Google and top Go engineering teams: <strong><code>golang.org/x/sync/errgroup</code></strong>.</p>
+
+  <h3>The Problem with Sequential Pipelines</h3>
+  <p>Right now, our <code>MultiProcessor</code> executes steps sequentially in a loop:</p>
+  <pre><code>Step 1 (Generate PDF):    100ms
+Step 2 (Send Email):      100ms
+Step 3 (Notify Shipping): 100ms
+-------------------------------
+Total latency:            300ms!</code></pre>
+
+  <p>If these three operations are independent, running them one-by-one wastes time. We want to run all three in parallel!</p>
+
+  <h3>Why Naive <code>go func()</code> is Dangerous in Production</h3>
+  <p>If you just launch 3 goroutines with <code>go func()</code>:</p>
+  <ul>
+    <li>What if Goroutine 1 fails? How do you cancel Goroutines 2 and 3 so they don't keep burning CPU and network?</li>
+    <li>How do you capture errors across goroutines without a mutex and race condition?</li>
+    <li>How do you guarantee you wait for all goroutines to finish before returning?</li>
+  </ul>
+
+  <h3>The Solution: <code>errgroup.WithContext</code></h3>
+  <p>Go's standard extension library provides <code>errgroup</code> to solve all three problems in 5 lines of code:</p>
+
+  <pre><code>import "golang.org/x/sync/errgroup"
+
+func (p *ParallelProcessor) Process(ctx context.Context, order *domain.Order) error {
+    // 💡 Creates a group and a derived context:
+    g, gCtx := errgroup.WithContext(ctx)
+
+    for _, sub := range p.processors {
+        sub := sub // capture loop variable
+        g.Go(func() error {
+            // If any sibling goroutine returns an error,
+            // gCtx is automatically cancelled!
+            return sub.Process(gCtx, order)
+        })
+    }
+
+    // g.Wait() waits for all goroutines to finish.
+    // It returns the FIRST non-nil error that occurred!
+    return g.Wait()
+}</code></pre>
+
+  <p><strong>The Magic of <code>errgroup</code>:</strong></p>
+  <ol>
+    <li><strong>First-Error Cancellation:</strong> If Task 1 fails, <code>gCtx</code> is immediately cancelled. Tasks 2 and 3 can check <code><-gCtx.Done()</code> and abort instantly!</li>
+    <li><strong>Zero Data Races:</strong> <code>g.Wait()</code> handles WaitGroup synchronization internally.</li>
+    <li><strong>Predictable Execution:</strong> Total duration equals the <em>slowest single task</em>, not the sum of all tasks! (3 &times; 100ms tasks finish in 100ms, not 300ms!).</li>
+  </ol>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build <code>ParallelProcessor</code></h3>
+    <ol>
+      <li>Refactor <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/item.go"><code>internal/domain/item.go</code></a> to use direct <code>ItemOption func(*Item)</code> without the <code>Opts</code> struct.</li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/parallel.go"><code>internal/processor/parallel.go</code></a>:
+        <ul>
+          <li>Define <code>type ParallelProcessor struct { processors []domain.Processor }</code>.</li>
+          <li>Implement <code>Process(ctx context.Context, order *domain.Order) (func() error, error)</code>:
+            <ul>
+              <li>Use <code>g, gCtx := errgroup.WithContext(ctx)</code>.</li>
+              <li>Launch each processor concurrently inside <code>g.Go(func() error { ... })</code>.</li>
+              <li>Collect rollback functions safely with a mutex (or combine them).</li>
+              <li>Call <code>g.Wait()</code> to wait for all goroutines!</li>
+            </ul>
+          </li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/parallel_test.go"><code>internal/processor/parallel_test.go</code></a>:
+        <ul>
+          <li><strong>Test 1 (Speed Verification):</strong> Run two sub-processors that each sleep for <code>50ms</code>. Assert that the total duration of <code>Process</code> is less than <code>80ms</code> (proving they ran in parallel, not sequentially!).</li>
+          <li><strong>Test 2 (Cancellation on Failure):</strong> Run one processor that immediately fails, and another that waits for <code><-ctx.Done()</code>. Assert that the second processor detects cancellation immediately!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/processor</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0024-request-scoped-structured-logging-and-correlation-ids.html">Previous: Lesson 0024</a> | Reference: <a href="../reference/0003-functional-options-pattern.html">Functional Options</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

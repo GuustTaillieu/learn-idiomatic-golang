@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: The Functional Options Pattern</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: The Functional Options Pattern</h1>
+  <p><em>The canonical Go pattern for constructors with optional parameters, defaults, and backwards compatibility.</em></p>
+
+  <h2>1. Why This Pattern Exists in Go</h2>
+  <p>Unlike languages like Python, C++, or C#, Go does <strong>not</strong> have:</p>
+  <ul>
+    <li>Constructor overloading (e.g. <code>NewServer()</code>, <code>NewServer(port)</code>, <code>NewServer(port, timeout)</code>).</li>
+    <li>Default parameter values (e.g. <code>func NewServer(port int = 8080)</code>).</li>
+  </ul>
+  <p>If you add a new parameter to a constructor in Go, you break every single caller in your entire codebase! The <strong>Functional Options Pattern</strong> (invented by Rob Pike, refined by Dave Cheney) solves this permanently.</p>
+
+  <h2>2. The Canonical Implementation</h2>
+  <pre><code>type Server struct {
+    host    string
+    port    int
+    timeout time.Duration
+}
+
+// 1. Define the option function signature
+type Option func(*Server)
+
+// 2. Define option helper constructors
+func WithPort(port int) Option {
+    return func(s *Server) {
+        s.port = port
+    }
+}
+
+func WithTimeout(d time.Duration) Option {
+    return func(s *Server) {
+        s.timeout = d
+    }
+}
+
+// 3. Constructor with sensible defaults
+func NewServer(host string, opts ...Option) *Server {
+    srv := &Server{
+        host:    host,
+        port:    8080,               // Default
+        timeout: 30 * time.Second,   // Default
+    }
+
+    // Apply all options
+    for _, opt := range opts {
+        opt(srv)
+    }
+
+    return srv
+}</code></pre>
+
+  <h2>3. How Callers Use It</h2>
+  <pre><code>// Uses all defaults:
+s1 := NewServer("localhost")
+
+// Overrides port only:
+s2 := NewServer("localhost", WithPort(9000))
+
+// Overrides both port and timeout:
+s3 := NewServer("localhost", WithPort(9000), WithTimeout(5*time.Second))</code></pre>
+
+  <h2>4. Golden Rules for Functional Options</h2>
+  <ol>
+    <li><strong>Mutate Directly:</strong> Mutate the target struct pointer directly (<code>func(s *Server)</code>). You don't need a separate <code>Opts</code> struct.</li>
+    <li><strong>Sensible Defaults First:</strong> Always populate mandatory fields and sensible defaults before applying the option closures.</li>
+    <li><strong>Variadic <code>...Option</code>:</strong> The variadic slice makes all options completely optional. Passing zero options is valid and clean.</li>
+  </ol>
+
+  <div class="footer">
+    <p>Part of the <a href="../MISSION.md">Idiomatic Go Mission</a>. Ask Antigravity anytime you need clarification.</p>
+  </div>
+
+</body>
+</html>

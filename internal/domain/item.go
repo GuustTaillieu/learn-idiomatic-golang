@@ -19,12 +19,30 @@ type Item struct {
 	CreatedAt time.Time
 }
 
-func NewItem(name string) *Item {
-	return &Item{
+type ItemOption func(*Item)
+
+func WithID(id ItemID) ItemOption {
+	return func(i *Item) {
+		i.ID = id
+	}
+}
+
+func WithCreatedAt(createdAt time.Time) ItemOption {
+	return func(i *Item) {
+		i.CreatedAt = createdAt
+	}
+}
+
+func NewItem(name string, opts ...ItemOption) *Item {
+	i := &Item{
 		ID:        ItemID(uuid.New()),
 		Name:      name,
 		CreatedAt: time.Now(),
 	}
+	for _, fn := range opts {
+		fn(i)
+	}
+	return i
 }
 
 var NilItemID = ItemID(uuid.Nil())

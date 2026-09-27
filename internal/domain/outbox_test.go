@@ -19,7 +19,7 @@ func TestOutboxDispatcher_DispatchesPendingOrders(t *testing.T) {
 		t.Fatalf("Failed to save order: %v", err)
 	}
 	// Setup Queue and Dispatcher
-	q := domain.NewQueue(&fastProcessor{}, s, time.Millisecond)
+	q := domain.NewQueue(&fastProcessor{}, s, domain.WithBaseDelay(time.Millisecond))
 	dispatcher := domain.NewOutboxDispatcher(s, q)
 
 	// Start worker, dispatch, and cleanly stop

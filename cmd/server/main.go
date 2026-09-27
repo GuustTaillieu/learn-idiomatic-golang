@@ -41,10 +41,10 @@ func main() {
 		slog.Error("Failed to create inventory store", "error", err)
 		os.Exit(1)
 	}
-	p1 := processor.NewPlaceOrderProcessor(db, inventoryStore, orderStore)
-	p2 := processor.NewPaymentProcessor()
-	p := processor.NewMultiProcessor(p1, p2)
-	queue := domain.NewQueue(p, orderStore, time.Second)
+	p1 := processor.NewOrderPlacing(db, inventoryStore, orderStore)
+	p2 := processor.NewPaying()
+	p := processor.NewPipeline(p1, p2)
+	queue := domain.NewQueue(p, orderStore)
 	dispatcher := domain.NewOutboxDispatcher(orderStore, queue)
 
 	healthChecker := healthchecker.NewMultiHealthChecker(store.NewDBHealthChecker(db), queue)

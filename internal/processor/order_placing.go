@@ -18,21 +18,21 @@ type OrderStore interface {
 	Save(ctx context.Context, order *domain.Order) error
 }
 
-type PlaceOrderProcessor struct {
+type OrderPlacing struct {
 	db             *sql.DB
 	InventoryStore InventoryStore
 	OrderStore     OrderStore
 }
 
-func NewPlaceOrderProcessor(db *sql.DB, inventoryStore InventoryStore, orderStore OrderStore) *PlaceOrderProcessor {
-	return &PlaceOrderProcessor{
+func NewOrderPlacing(db *sql.DB, inventoryStore InventoryStore, orderStore OrderStore) *OrderPlacing {
+	return &OrderPlacing{
 		db:             db,
 		InventoryStore: inventoryStore,
 		OrderStore:     orderStore,
 	}
 }
 
-func (p *PlaceOrderProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (p *OrderPlacing) Process(ctx context.Context, order *domain.Order) (func() error, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

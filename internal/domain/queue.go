@@ -9,8 +9,12 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
+type Processer interface {
+	Process(ctx context.Context, order *Order) (func() error, error)
+}
+
 type Queue struct {
-	processor Processor
+	processor Processer
 	store     OrderStore
 	orders    chan *Order
 	wg        sync.WaitGroup
@@ -26,14 +30,26 @@ type OrderStore interface {
 	GetPendingOrders(ctx context.Context) ([]*Order, error)
 }
 
-func NewQueue(processor Processor, store OrderStore, baseDelay time.Duration) *Queue {
-	return &Queue{
+type QueueOption func(*Queue)
+
+func WithBaseDelay(delay time.Duration) QueueOption {
+	return func(q *Queue) {
+		q.baseDelay = delay
+	}
+}
+
+func NewQueue(processor Processer, store OrderStore, opts ...QueueOption) *Queue {
+	q := &Queue{
 		processor: processor,
 		store:     store,
 		orders:    make(chan *Order, 100), // Buffer size of 100
 		stopChan:  make(chan struct{}),
-		baseDelay: baseDelay,
+		baseDelay: time.Second, // Default base delay for retries
 	}
+	for _, fn := range opts {
+		fn(q)
+	}
+	return q
 }
 
 func (q *Queue) Ping(ctx context.Context) error {

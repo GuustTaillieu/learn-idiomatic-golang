@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -28,9 +27,22 @@ type Order struct {
 	MaxRetries int
 	CreatedAt  time.Time
 }
+type OrderOption func(*Order)
 
-func NewOrder(itemID ItemID, amount int) *Order {
-	return &Order{
+func WithMaxRetries(maxRetries int) OrderOption {
+	return func(o *Order) {
+		o.MaxRetries = maxRetries
+	}
+}
+
+func WithOrderStatus(status OrderStatus) OrderOption {
+	return func(o *Order) {
+		o.Status = status
+	}
+}
+
+func NewOrder(itemID ItemID, amount int, opts ...OrderOption) *Order {
+	o := &Order{
 		ID:         OrderID(uuid.New()),
 		ItemID:     itemID,
 		Amount:     amount,
@@ -39,6 +51,10 @@ func NewOrder(itemID ItemID, amount int) *Order {
 		MaxRetries: 3,
 		CreatedAt:  time.Now(),
 	}
+	for _, fn := range opts {
+		fn(o)
+	}
+	return o
 }
 
 type OrderID uuid.UUID
@@ -90,8 +106,4 @@ func (id *OrderID) Scan(src any) error {
 	default:
 		return fmt.Errorf("cannot scan %T into OrderID", src)
 	}
-}
-
-type Processor interface {
-	Process(ctx context.Context, order *Order) (func() error, error)
 }

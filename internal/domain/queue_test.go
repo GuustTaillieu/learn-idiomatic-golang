@@ -15,9 +15,9 @@ import (
 func TestQueue_SubmitAfterStop(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	p := processor.NewPaymentProcessor()
+	p := processor.NewPaying()
 	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s, time.Millisecond)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -35,9 +35,9 @@ func TestQueue_SubmitAfterStop(t *testing.T) {
 func TestQueue_StoppingAfterProcessing_StoresAllOrdersAsCompleted(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	p := processor.NewPaymentProcessor()
+	p := processor.NewPaying()
 	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s, time.Millisecond)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 
 	// Act
@@ -64,10 +64,10 @@ func TestQueue_MultiProcessor_SuccessfulProcessing(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
 	s := store.NewOrderMemoryStore()
-	p1 := processor.NewPaymentProcessor()
+	p1 := processor.NewPaying()
 	p2 := &ChangeAmountProcessor{s}
-	p := processor.NewMultiProcessor(p1, p2)
-	q := domain.NewQueue(p, s, time.Millisecond)
+	p := processor.NewPipeline(p1, p2)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -90,11 +90,11 @@ func TestMultiProcessor_FailedProcessing_ShouldRollbackAndMarkAsFailed(t *testin
 	// Preparation
 	ctx := context.Background()
 	s := store.NewOrderMemoryStore()
-	p1 := processor.NewPaymentProcessor()
+	p1 := processor.NewPaying()
 	p2 := &ChangeAmountProcessor{s}
 	p3 := &FailingProcessor{s}
-	p := processor.NewMultiProcessor(p1, p2, p3)
-	q := domain.NewQueue(p, s, time.Millisecond)
+	p := processor.NewPipeline(p1, p2, p3)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -122,8 +122,8 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldSucceedAfterRetries(t
 	s := store.NewOrderMemoryStore()
 	p1 := &RetryableProcessor{OrderStore: s, FailAmount: 2}
 	p2 := &ChangeAmountProcessor{OrderStore: s}
-	p := processor.NewMultiProcessor(p1, p2)
-	q := domain.NewQueue(p, s, time.Millisecond)
+	p := processor.NewPipeline(p1, p2)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -148,8 +148,8 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldFailAfterMaxRetries(t
 	s := store.NewOrderMemoryStore()
 	p1 := &RetryableProcessor{OrderStore: s, FailAmount: 5}
 	p2 := &ChangeAmountProcessor{OrderStore: s}
-	p := processor.NewMultiProcessor(p1, p2)
-	q := domain.NewQueue(p, s, time.Millisecond)
+	p := processor.NewPipeline(p1, p2)
+	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 

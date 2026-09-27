@@ -27,7 +27,7 @@ func TestPlaceOrderProcessor_ProcessAndRollback(t *testing.T) {
 	if err := inventoryStore.AddStock(context.Background(), stock); err != nil {
 		t.Fatalf("Failed to add stock: %v", err)
 	}
-	p := processor.NewPlaceOrderProcessor(db, inventoryStore, orderStore)
+	p := processor.NewOrderPlacing(db, inventoryStore, orderStore)
 	order := domain.NewOrder(item.ID, 1)
 
 	// Act
@@ -80,7 +80,7 @@ func TestPlaceOrderProcessor_Process_InsufficientStock(t *testing.T) {
 	if err := inventoryStore.AddStock(context.Background(), stock); err != nil {
 		t.Fatalf("Failed to add stock: %v", err)
 	}
-	p := processor.NewPlaceOrderProcessor(db, inventoryStore, orderStore)
+	p := processor.NewOrderPlacing(db, inventoryStore, orderStore)
 	order := domain.NewOrder(item.ID, 2) // Requesting more than available
 
 	// Act
@@ -103,7 +103,7 @@ func TestPlaceOrderProcessor_Process_ConcurrentOrders(t *testing.T) {
 	if err := inventoryStore.AddStock(context.Background(), stock); err != nil {
 		t.Fatalf("Failed to add stock: %v", err)
 	}
-	p := processor.NewPlaceOrderProcessor(db, inventoryStore, orderStore)
+	p := processor.NewOrderPlacing(db, inventoryStore, orderStore)
 
 	// Act
 	var wg sync.WaitGroup
