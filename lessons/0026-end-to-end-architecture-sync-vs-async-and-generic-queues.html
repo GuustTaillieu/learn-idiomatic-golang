@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0026: End-to-End Architecture: Sync vs. Async & Generic Queues</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0026: End-to-End Architecture: Sync vs. Async & Generic Queues</h1>
+  <p><em>Target: Connect the full architectural picture from browser checkout to background workers, understand Sync vs. Async boundaries, and future-proof with Go Generics.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Parallel Processor:</strong>
+    <ul>
+      <li>🎉 <strong>Tested and Verified!</strong> In <code>internal/processor/parallel.go</code>, you built <code>Parallel</code> using <code>errgroup.WithContext(ctx)</code>.</li>
+      <li>⚡ <strong>Concurrency Proven:</strong> Your test proved that two 50ms/60ms tasks completed in <strong>60ms total</strong> (not 110ms!).</li>
+      <li>🛡️ <strong>Thread-Safe Rollback Collection:</strong> You safely guarded <code>rollbackFuncs[i] = rollbackFunc</code> with a <code>sync.Mutex</code>, and verified that failure cancels sibling workers immediately!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Big Picture: How Does the User Actually Pay?</h2>
+  <p>You asked a profound real-world question:</p>
+  <blockquote>
+    <em>"If the processing is paying, how does that arrive at the user? The server cannot reach out to the client without a websocket! How do we reply with a payment screen? Do we wait or do it in the background?"</em>
+  </blockquote>
+
+  <p>In senior enterprise architecture (like Shopify, Stripe, Amazon, or Uber), we separate work into two strict zones:</p>
+
+  <div style="display: flex; gap: 1rem; margin: 1.5rem 0;">
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #61afef; margin-top: 0;">Zone 1: Synchronous (Front Office)</h3>
+      <p><strong>Rule:</strong> Fast (&lt; 150ms). What the user needs <em>right now</em> to continue.</p>
+      <ul>
+        <li>Validate cart & reserve stock in SQLite.</li>
+        <li>Create Stripe / Adyen <em>Payment Intent</em>.</li>
+        <li>Return HTTP response with <code>client_secret</code> or <code>checkout_url</code>.</li>
+      </ul>
+      <p>The user's browser immediately opens the credit card form or Apple Pay prompt!</p>
+    </div>
+
+    <div style="flex: 1; border: 1px solid #444; border-radius: 8px; padding: 1rem; background: #1e1e1e;">
+      <h3 style="color: #98c379; margin-top: 0;">Zone 2: Asynchronous (Back Office / Queue)</h3>
+      <p><strong>Rule:</strong> Heavy, slow, retryable. The user does not wait on this HTTP socket.</p>
+      <ul>
+        <li>Generating 5MB PDF invoices.</li>
+        <li>Sending email via SendGrid / SES.</li>
+        <li>Notifying warehouse robots to pack boxes.</li>
+        <li>Syncing accounting analytics.</li>
+      </ul>
+      <p>Handled by our <strong>Transactional Outbox & Worker Queue</strong>!</p>
+    </div>
+  </div>
+
+  <h2>2. How Does the User Know an Async Task Finished?</h2>
+  <p>If work is processed in the background, how does the frontend UI know the result without long-held blocking connections?</p>
+
+  <ol>
+    <li><strong>Pattern A: Short Polling (90% of Tech Companies):</strong>
+      <ul>
+        <li>Client submits order &rarr; Server returns <code>202 Accepted {"order_id": "123", "status": "PENDING"}</code>.</li>
+        <li>Frontend polls <code>GET /orders/123</code> every 1 second.</li>
+        <li>As soon as the worker completes, the status becomes <code>COMPLETED</code> and the UI displays "Order Confirmed!".</li>
+        <li><em>Why it wins:</em> Bulletproof, works through any firewall, proxy, or flaky mobile connection.</li>
+      </ul>
+    </li>
+    <li><strong>Pattern B: Server-Sent Events (SSE):</strong>
+      <ul>
+        <li>Client opens a read-only HTTP stream: <code>GET /orders/123/stream</code>.</li>
+        <li>Server pushes events as workers update the order state.</li>
+      </ul>
+    </li>
+    <li><strong>Pattern C: Optimistic UI + Webhook/Email:</strong>
+      <ul>
+        <li>Standard in batch operations or UberEats/Amazon: <em>"We received your 50 orders! We will email your confirmation shortly."</em></li>
+      </ul>
+    </li>
+  </ol>
+
+  <h2>3. Future-Proofing with Go Generics: <code>Queue[T]</code></h2>
+  <p>You asked: <em>"Can we make the queue generic so it can handle any job/task, not only orders? Do people use generics or interfaces in Go?"</em></p>
+  <p><strong>Yes!</strong> In Go 1.18+, Generics were added specifically for reusable data structures and algorithms. A <strong>Generic Queue</strong> is the textbook example of idiomatic Go Generics!</p>
+
+  <h3>How a Generic Queue Looks:</h3>
+  <pre><code>// Queue is now completely generic over any type T!
+type Queue[T any] struct {
+    processor func(ctx context.Context, item T) error
+    items     chan T
+    wg        sync.WaitGroup
+    mu        sync.RWMutex
+    closed    bool
+}
+
+func NewQueue[T any](processor func(context.Context, T) error, capacity int) *Queue[T] {
+    return &Queue[T]{
+        processor: processor,
+        items:     make(chan T, capacity),
+    }
+}
+
+func (q *Queue[T]) Submit(ctx context.Context, item T) error { ... }</code></pre>
+
+  <p>Now in your application, you can instantiate:</p>
+  <ul>
+    <li><code>orderQueue := NewQueue[*domain.Order](...)</code></li>
+    <li><code>emailQueue := NewQueue[*EmailJob](...)</code></li>
+    <li><code>videoQueue := NewQueue[*VideoEncodingJob](...)</code></li>
+  </ul>
+  <p>All sharing the exact same battle-tested worker pool, graceful shutdown, and retry logic with <strong>100% compile-time type safety</strong> and zero type casting!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build a Generic Worker Queue</h3>
+    <ol>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/queue.go"><code>internal/lib/queue.go</code></a>:
+        Implement a type-safe generic concurrent queue:
+        <pre><code>type Queue[T any] struct { ... }
+func NewQueue[T any](processor func(ctx context.Context, item T) error, bufferSize int) *Queue[T]
+func (q *Queue[T]) Start(ctx context.Context, numWorkers int)
+func (q *Queue[T]) Submit(ctx context.Context, item T) error
+func (q *Queue[T]) Stop()</code></pre>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/queue_test.go"><code>internal/lib/queue_test.go</code></a>:
+        Write a test verifying that <code>Queue[int]</code> or <code>Queue[string]</code> processes items concurrently, drains all items on <code>Stop()</code>, and passes the race detector!
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/lib</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0025-parallel-fanout-errgroup-and-functional-options.html">Previous: Lesson 0025</a> | Reference: <a href="../reference/0003-functional-options-pattern.html">Functional Options</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
