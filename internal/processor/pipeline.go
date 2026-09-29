@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type Pipeline struct {
-	processors []domain.Processer
+type Pipeline[T any] struct {
+	processors []lib.Processor[T]
 }
 
-func NewPipeline(processors ...domain.Processer) *Pipeline {
-	return &Pipeline{processors: processors}
+func NewPipeline[T any](processors ...lib.Processor[T]) *Pipeline[T] {
+	return &Pipeline[T]{processors: processors}
 }
 
-func (m *Pipeline) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (m *Pipeline[T]) Process(ctx context.Context, item T) (func() error, error) {
 	rollbackFuncs := make([]func() error, 0, len(m.processors))
 
 	rollbackAll := func() error {
@@ -28,7 +28,7 @@ func (m *Pipeline) Process(ctx context.Context, order *domain.Order) (func() err
 	}
 
 	for _, processor := range m.processors {
-		rollbackFunc, err := processor.Process(ctx, order)
+		rollbackFunc, err := processor.Process(ctx, item)
 		if err != nil {
 			return rollbackAll, err
 		}

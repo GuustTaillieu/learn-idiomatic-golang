@@ -12,6 +12,8 @@
   Practical explanation debunking the 50k-star layout myth. Use for: directory structure evolution (`internal/`, `cmd/`).
 - [Article: _Go Error Handling in 2026: The Patterns I Actually Ship_ by Rayyan](https://abrarqasim.com/)
   Real-world boundary wrapping, sentinel errors vs typed structs, and eliminating "log-and-return". Use for: production error design.
+- [Article: _Standard Package Layout_ by Ben Johnson](https://www.gobeyond.dev/standard-package-layout/)
+  Seminal guide on structuring Go applications by domain and technology subpackages to eliminate cyclic dependencies and stuttering. Use for: project architecture and package naming.
 
 ## Wisdom (Communities)
 

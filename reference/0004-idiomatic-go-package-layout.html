@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Idiomatic Go Package Layout & Project Architecture</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Idiomatic Go Package Layout & Project Architecture</h1>
+  <p><em>Authoritative guide on package naming, circular dependency avoidance, and project organization in production Go.</em></p>
+
+  <div class="callout">
+    <strong>The Golden Rules of Go Package Design:</strong>
+    <ol>
+      <li><strong>Name by what it provides, not what it contains:</strong> Package names are lowercase singular nouns (<code>sqlite</code>, <code>order</code>, <code>http</code>), never generic drawers (<code>models</code>, <code>stores</code>, <code>utils</code>, <code>common</code>).</li>
+      <li><strong>Eliminate Stutter:</strong> The caller sees <code>package.Symbol</code>. Never repeat the package name in the type (<code>sqlite.OrderStore</code>, NOT <code>store.OrderSQLStore</code>; <code>ring.New()</code>, NOT <code>ring.NewRing()</code>).</li>
+      <li><strong>Respect the Dependency Arrow:</strong> Go strictly forbids cyclic imports. Dependencies must form a Directed Acyclic Graph (DAG).</li>
+    </ol>
+  </div>
+
+  <h2>1. Architectural Pattern Comparison</h2>
+
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Pattern</th>
+        <th style="padding: 8px;">Structure</th>
+        <th style="padding: 8px;">Pros & Cons in Go</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>1. Package by Layer (Anti-Pattern)</strong></td>
+        <td style="padding: 8px;"><code>internal/models/</code><br><code>internal/stores/</code><br><code>internal/handlers/</code></td>
+        <td style="padding: 8px;">
+          ❌ Severe stuttering (<code>models.OrderModel</code>, <code>stores.OrderStore</code>)<br>
+          ❌ Almost inevitable cyclic imports as models and stores reference each other<br>
+          ❌ Low cohesion (1 feature spread over 5 directories)
+        </td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>2. Ben Johnson's Standard Package Layout</strong></td>
+        <td style="padding: 8px;">
+          <code>internal/domain/</code> (pure types & interfaces)<br>
+          <code>internal/sqlite/</code> (db implementation)<br>
+          <code>internal/http/</code> (web endpoints)<br>
+          <code>cmd/server/main.go</code> (wiring)
+        </td>
+        <td style="padding: 8px;">
+          ✅ <strong>Zero circular imports:</strong> domain depends on nothing<br>
+          ✅ <strong>Zero stutter:</strong> <code>sqlite.NewOrderStore(db)</code> returns <code>domain.OrderStore</code><br>
+          ✅ Swappable infrastructure (e.g. SQLite to Postgres, or memory mocks)
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><strong>3. Package by Feature (Vertical Slices)</strong></td>
+        <td style="padding: 8px;">
+          <code>internal/order/</code> (model, store, handler)<br>
+          <code>internal/inventory/</code> (model, store, handler)<br>
+          <code>internal/billing/</code>
+        </td>
+        <td style="padding: 8px;">
+          ✅ High cohesion for standalone domains<br>
+          ✅ Clean naming: <code>order.NewStore()</code>, <code>order.NewHandler()</code><br>
+          ⚠️ <strong>Watch out for cross-domain cycles:</strong> If <code>order</code> imports <code>inventory</code> and <code>inventory</code> imports <code>order</code>, compilation fails!
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. The Stutter Test: Caller-Site Ergonomics</h2>
+  <p>Always evaluate your naming from the perspective of the <strong>caller</strong>:</p>
+
+  <pre><code>// ❌ Bad (Stutter & Generic Layer):
+import "github.com/my/app/internal/stores"
+s := stores.NewOrderSQLStore(db) // Reads as: stores.NewOrderSQLStore
+
+// ✅ Good (Driver-based Package):
+import "github.com/my/app/internal/sqlite"
+s := sqlite.NewOrderStore(db) // Reads as: sqlite.NewOrderStore
+
+// ✅ Good (Feature-based Package):
+import "github.com/my/app/internal/order"
+s := order.NewSQLiteStore(db) // Reads as: order.NewSQLiteStore</code></pre>
+
+  <h2>3. Preventing Cyclic Imports in Feature Packages</h2>
+  <p>If you choose Package-by-Feature (e.g. <code>internal/order</code> and <code>internal/inventory</code>), how do they communicate without cycles?</p>
+
+  <ol>
+    <li><strong>Pass Primitive IDs:</strong> Instead of <code>order.Item</code> depending on <code>inventory.Stock</code>, pass scalar IDs: <code>itemID uuid.UUID</code> or string identifiers.</li>
+    <li><strong>Define Interfaces at the Consumer:</strong> <code>package order</code> defines:
+      <pre><code>type StockChecker interface {
+    HasStock(ctx context.Context, itemID uuid.UUID, qty int) bool
+}</code></pre>
+      <code>order</code> does NOT import <code>inventory</code>! An adapter or orchestrator in <code>cmd/</code> wires them together.
+    </li>
+    <li><strong>High-Level Orchestrator:</strong> A workflow/processor package (like <code>internal/processor</code>) imports both <code>order</code> and <code>inventory</code> and coordinates them in a pipeline.</li>
+  </ol>
+
+  <div class="footer">
+    <p>Reference 0004 | <a href="0002-idiomatic-go-naming-conventions.html">Reference 0002: Naming Conventions</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

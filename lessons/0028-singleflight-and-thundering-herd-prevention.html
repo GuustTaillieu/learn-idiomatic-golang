@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0028: Singleflight & Preventing the Thundering Herd</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0028: Singleflight & Preventing the Thundering Herd</h1>
+  <p><em>Target: Master one of Go's most unique, elegant production concurrency weapons: request deduplication with singleflight.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Generic Queue:</strong>
+    <ul>
+      <li>🎉 <strong>All 7 packages passing with 0 data races!</strong> Your <code>Queue[T]</code> in <code>internal/lib/queue.go</code> successfully processes generic items!</li>
+      <li>✨ <strong>Functional Options on Generics:</strong> <code>type QueueOptionFn[T any] func(*Queue[T])</code> is clean and advanced Go!</li>
+      <li>💡 <strong>Subtle Concurrency Gotcha to Fix:</strong> In <code>Queue[T]</code>, you placed <code>retries int</code> on the struct (<code>q.retries++</code>). If you run 3 workers concurrently, they share <code>q.retries</code> without a lock, and Item A's retries affect Item B! Retries belong to the <em>item</em>, not the queue.</li>
+    </ul>
+  </div>
+
+  <h2>1. The Problem: The "Thundering Herd" in Polling Systems</h2>
+  <p>In Lesson 0026, we learned that clients poll <code>GET /orders/{id}</code> every second to check if their order has finished processing.</p>
+  <p>Now imagine what happens during a big product drop or flash sale:</p>
+  <ol>
+    <li>500 users refresh the page at the exact same second to check stock for a hot sneaker (<code>GET /inventory/{item_id}</code>).</li>
+    <li>500 concurrent HTTP request goroutines hit your server at the exact same millisecond.</li>
+    <li>Without protection, your server fires <strong>500 identical SQL queries</strong> to SQLite simultaneously:
+      <pre><code>SELECT * FROM inventory WHERE item_id = 'sneaker-123'; -- x 500!</code></pre>
+    </li>
+    <li>SQLite gets locked, CPU spikes, database pool exhausts, and responses slow down to a crawl.</li>
+  </ol>
+
+  <h2>2. The Go Secret Weapon: <code>singleflight.Group</code></h2>
+  <p>In most languages, solving this requires external distributed caches like Redis or complex locking. In Go, the standard library team built a magical concurrency primitive: <strong><code>golang.org/x/sync/singleflight</code></strong>.</p>
+
+  <h3>How Singleflight Works:</h3>
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>500 concurrent goroutines call: g.Do("item-123", fn)</code></p>
+    <p>&darr;</p>
+    <p><strong>Goroutine 1:</strong> Executes the SQL query!</p>
+    <p><strong>Goroutines 2 through 500:</strong> Wait seamlessly in memory!</p>
+    <p>&darr;</p>
+    <p><code>Goroutine 1 finishes &rarr; Result is shared with all 500 goroutines simultaneously!</code></p>
+  </div>
+
+  <p><strong>Result:</strong> 500 incoming HTTP requests result in <strong>exactly ONE database query</strong>! The other 499 requests get the result without touching the database at all.</p>
+
+  <h2>3. The Idiomatic Go Implementation</h2>
+  <pre><code>import "golang.org/x/sync/singleflight"
+
+type CachedInventoryStore struct {
+    store domain.InventoryStore
+    group singleflight.Group
+}
+
+func (c *CachedInventoryStore) Get(ctx context.Context, itemID domain.ItemID) (*domain.Stock, error) {
+    // 💡 The key identifies duplicate in-flight requests:
+    key := fmt.Sprintf("get_stock:%s", itemID)
+
+    val, err, shared := c.group.Do(key, func() (any, error) {
+        // Only ONE goroutine executes this function at a time for this key!
+        return c.store.Get(ctx, itemID)
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    if shared {
+        slog.Info("Deduplicated query via singleflight!", "item_id", itemID)
+    }
+
+    return val.(*domain.Stock), nil
+}</code></pre>
+
+  <h2>4. Why Singleflight is Unique to Go</h2>
+  <p>Singleflight relies on Go's lightweight goroutines and channels. Because goroutines only cost ~2KB of RAM, having 500 goroutines pause and wait on a Go channel until the first goroutine returns costs virtually zero CPU and memory.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge: Build Thundering Herd Protection</h3>
+    <ol>
+      <li><strong>Fix Queue Retries:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/queue.go"><code>internal/lib/queue.go</code></a>, remove <code>retries</code> from <code>Queue[T]</code>. Use a local <code>retries := 0</code> inside the <code>tryProcess</code> loop so items don't interfere with each other!</li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/cached_inventory.go"><code>internal/store/cached_inventory.go</code></a>:
+        <ul>
+          <li>Define <code>type CachedInventoryStore struct { store InventoryStore; group singleflight.Group }</code>.</li>
+          <li>Implement <code>Get(ctx context.Context, itemID domain.ItemID) (*domain.Stock, error)</code> wrapped in <code>c.group.Do(...)</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/cached_inventory_test.go"><code>internal/store/cached_inventory_test.go</code></a>:
+        <ul>
+          <li>Write a test with a mock store that counts how many times <code>Get</code> is executed.</li>
+          <li>Launch <strong>10 concurrent goroutines</strong> simultaneously calling <code>cachedStore.Get(ctx, itemID)</code>.</li>
+          <li>Assert that all 10 goroutines receive the correct stock, but the underlying database query was only executed <strong>ONCE</strong>!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./internal/store/...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0027-data-vs-code-persistence-and-pure-generic-queues.html">Previous: Lesson 0027</a> | Reference: <a href="../reference/0003-functional-options-pattern.html">Functional Options</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

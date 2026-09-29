@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 	"golang.org/x/sync/errgroup"
 )
 
-type Parallel struct {
-	processors []domain.Processer
+type Parallel[T any] struct {
+	processors []lib.Processor[T]
 }
 
-func NewParallel(processors ...domain.Processer) *Parallel {
-	return &Parallel{
+func NewParallel[T any](processors ...lib.Processor[T]) *Parallel[T] {
+	return &Parallel[T]{
 		processors: processors,
 	}
 }
 
-func (p *Parallel) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (p *Parallel[T]) Process(ctx context.Context, item T) (func() error, error) {
 	g, gCtx := errgroup.WithContext(ctx)
 	rollbackFuncs := make([]func() error, len(p.processors))
 	mu := sync.Mutex{}
@@ -27,7 +27,7 @@ func (p *Parallel) Process(ctx context.Context, order *domain.Order) (func() err
 	for i, processor := range p.processors {
 		i, processor := i, processor // capture range variables
 		g.Go(func() error {
-			rollbackFunc, err := processor.Process(gCtx, order)
+			rollbackFunc, err := processor.Process(gCtx, item)
 			if err != nil {
 				return err
 			}

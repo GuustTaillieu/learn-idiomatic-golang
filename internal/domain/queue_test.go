@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
 	"github.com/GuustTaillieu/idiomatic-go/internal/store"
 )
@@ -176,7 +177,7 @@ type RetryableProcessor struct {
 
 func (r *RetryableProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
 	if order.Retries < r.FailAmount {
-		return nil, domain.ErrTransient
+		return nil, lib.ErrTransient
 	}
 	order.Amount += 5 // Simulate some processing that modifies the order
 	r.OrderStore.Save(ctx, order)

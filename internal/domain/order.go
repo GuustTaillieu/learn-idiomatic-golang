@@ -3,10 +3,13 @@ package domain
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 	"uuid"
 )
+
+var ErrOrderNotFound = errors.New("order not found")
 
 type OrderStatus string
 

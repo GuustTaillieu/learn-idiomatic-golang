@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,13 @@ func NewStock(itemID ItemID, quantity int) *Stock {
 		UpdatedAt: time.Now(),
 		CreatedAt: time.Now(),
 	}
+}
+
+type InventoryStore interface {
+	ReserveStock(ctx context.Context, stock *Stock) error
+	ReleaseStock(ctx context.Context, stock *Stock) error
+	AddStock(ctx context.Context, stock *Stock) error
+	Get(ctx context.Context, itemID ItemID) (*Stock, error)
 }
 
 type StockID uuid.UUID

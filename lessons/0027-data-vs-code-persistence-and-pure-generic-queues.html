@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0027: Data vs. Code: The Persistence Boundary & Pure Generic Queues</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0027: Data vs. Code: The Persistence Boundary & Pure Generic Queues</h1>
+  <p><em>Target: Master the fundamental architectural boundary between Data (State) and Behavior (Code), and build a clean, pure Generic Queue in Go.</em></p>
+
+  <div class="callout">
+    <strong>First: You Are Not "Bad" At All!</strong>
+    <p>You hit the exact same mental wall that led to the creation of Celery, Temporal, and RPC systems! You asked yourself: <em>"A task has data and an action... but how do I save an action to SQLite?"</em></p>
+    <p>The answer is: <strong>You can't. And you shouldn't!</strong> Let's understand why.</p>
+  </div>
+
+  <h2>1. The Golden Law: Databases Store State, Not Code</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 1.5rem 0;">
+    <thead>
+      <tr style="background-color: #2b2b2b; color: #fff;">
+        <th>Layer</th>
+        <th>What It Holds</th>
+        <th>Examples</th>
+        <th>Can It Be Saved to SQL?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>State (Data)</strong></td>
+        <td>Values, numbers, strings, JSON, timestamps</td>
+        <td><code>order.ID</code>, <code>order.Amount</code>, <code>"PENDING"</code></td>
+        <td>✅ <strong>YES</strong> (SQLite columns)</td>
+      </tr>
+      <tr>
+        <td><strong>Behavior (Code)</strong></td>
+        <td>Functions, interfaces, closures, goroutines</td>
+        <td><code>processor.Process(...)</code>, <code>func() error</code></td>
+        <td>❌ <strong>NO</strong> (Cannot serialize a memory pointer)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>When you defined:</p>
+  <pre><code>type Task[T any] struct {
+    Item      T
+    Processor Processor[T] // ⚠️ Memory pointer to Go code!
+}</code></pre>
+  <p>And tried to call <code>taskStore.Save(ctx, task)</code>, SQLite looked at <code>task.Processor</code> and said: <em>"What on earth is a Go function address? I only know TEXT, INTEGER, and BLOB!"</em></p>
+  <p>Even worse: when your server crashes and restarts, how could SQLite recreate that function pointer? It can't!</p>
+
+  <h2>2. How Real Senior Systems Separate the Two</h2>
+  <p>There are two clean ways production systems handle this:</p>
+
+  <h3>Approach A: Pure Generic Concurrency Queue (What Lesson 0026 Asked For)</h3>
+  <p>Keep the Queue as a <strong>pure in-memory concurrency tool</strong>. It coordinates goroutines, buffers, and shutdown in RAM, and leaves database persistence to domain stores!</p>
+  <pre><code>// In internal/lib/queue.go:
+type Queue[T any] struct {
+    processor func(context.Context, T) error // The Queue owns the action in RAM!
+    items     chan T
+    // ...
+}</code></pre>
+  <ul>
+    <li>The HTTP handler only touches <strong>Data</strong>: saves <code>Order</code> to SQLite.</li>
+    <li>The Outbox Dispatcher reads <code>*Order</code> from SQLite, and passes it to <code>orderQueue.Submit(ctx, order)</code>.</li>
+    <li>The Queue workers run the processor on the order!</li>
+  </ul>
+
+  <h3>Approach B: The Task Name Registry (How Celery / Asynq / Temporal work)</h3>
+  <p>If you really want a universal <code>tasks</code> table in SQLite for different types of jobs (Orders, Emails, Invoices), you do <strong>not</strong> save the Go code. You save a <strong>String Name</strong>!</p>
+  <pre><code>// In Database:
+// id: "task_123", type: "order.fulfill", payload: {"order_id": "456"}
+
+// In Go: Register your handlers at boot:
+registry := map[string]Processor{
+    "order.fulfill": orderProcessor,
+    "email.send":    emailProcessor,
+}
+
+// In Worker: Look up the code by its string name!
+handler := registry[task.Type]
+handler.Process(ctx, task.Payload)</code></pre>
+
+  <h2>3. Putting You Back on Track: Step-by-Step</h2>
+
+  <div class="challenge">
+    <h3>Your Roadmap to Clean, Green Code</h3>
+    <ol>
+      <li><strong>Restore <code>internal/domain/queue.go</code>:</strong>
+        Uncomment the file so your domain order queue and tests compile.
+      </li>
+      <li><strong>Restore <code>internal/httpapi/handle_create_order.go</code>:</strong>
+        Keep it simple: it receives the JSON, creates <code>domain.NewOrder</code>, saves to <code>h.store.Save</code>, and returns <code>201 Created</code>. No tasks or processors in the HTTP handler!
+      </li>
+      <li><strong>Build Pure <code>lib.Queue[T]</code>:</strong>
+        In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/queue.go"><code>internal/lib/queue.go</code></a>, implement the pure generic in-memory queue:
+        <pre><code>type Queue[T any] struct {
+    processor func(ctx context.Context, item T) error
+    items     chan T
+    wg        sync.WaitGroup
+    mu        sync.RWMutex
+    closed    bool
+    stopChan  chan struct{}
+}
+
+func NewQueue[T any](processor func(ctx context.Context, item T) error, bufferSize int) *Queue[T]
+func (q *Queue[T]) Start(ctx context.Context, workers int)
+func (q *Queue[T]) Submit(ctx context.Context, item T) error
+func (q *Queue[T]) Stop()</code></pre>
+      </li>
+      <li><strong>Test <code>lib.Queue[T]</code> in <code>internal/lib/queue_test.go</code>:</strong>
+        Write a unit test processing integers (e.g. summing numbers or counting) with <code>Queue[int]</code>.
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0026-end-to-end-architecture-sync-vs-async-and-generic-queues.html">Previous: Lesson 0026</a> | Reference: <a href="../reference/0003-functional-options-pattern.html">Functional Options</a> | Reference: <a href="../reference/0002-idiomatic-go-naming-conventions.html">Naming Conventions</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

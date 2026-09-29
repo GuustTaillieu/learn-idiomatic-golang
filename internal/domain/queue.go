@@ -9,12 +9,14 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type Processer interface {
+var ErrQueueClosed = fmt.Errorf("queue is closed")
+
+type Processor interface {
 	Process(ctx context.Context, order *Order) (func() error, error)
 }
 
 type Queue struct {
-	processor Processer
+	processor Processor
 	store     OrderStore
 	orders    chan *Order
 	wg        sync.WaitGroup
@@ -38,7 +40,7 @@ func WithBaseDelay(delay time.Duration) QueueOption {
 	}
 }
 
-func NewQueue(processor Processer, store OrderStore, opts ...QueueOption) *Queue {
+func NewQueue(processor Processor, store OrderStore, opts ...QueueOption) *Queue {
 	q := &Queue{
 		processor: processor,
 		store:     store,
@@ -142,7 +144,7 @@ func tryProcess(ctx context.Context, q *Queue, order *Order) (OrderStatus, error
 		}
 
 		// There was an error during processing, check if it's retryable
-		if IsRetryable(err) {
+		if lib.IsRetryable(err) {
 			if order.Retries < order.MaxRetries {
 				order.Retries++
 				backoff := q.baseDelay * time.Duration(1<<order.Retries) // Exponential backoff

@@ -9,22 +9,17 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type InventoryStore interface {
-	ReserveStock(ctx context.Context, stock *domain.Stock) error
-	ReleaseStock(ctx context.Context, stock *domain.Stock) error
-}
-
 type OrderStore interface {
 	Save(ctx context.Context, order *domain.Order) error
 }
 
 type OrderPlacing struct {
 	db             *sql.DB
-	InventoryStore InventoryStore
+	InventoryStore domain.InventoryStore
 	OrderStore     OrderStore
 }
 
-func NewOrderPlacing(db *sql.DB, inventoryStore InventoryStore, orderStore OrderStore) *OrderPlacing {
+func NewOrderPlacing(db *sql.DB, inventoryStore domain.InventoryStore, orderStore OrderStore) *OrderPlacing {
 	return &OrderPlacing{
 		db:             db,
 		InventoryStore: inventoryStore,

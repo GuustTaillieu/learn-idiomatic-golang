@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0029: Singleflight Test Determinism & Idiomatic Package Layout</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0029: Singleflight Test Determinism & Idiomatic Package Layout</h1>
+  <p><em>Target: Master how to reliably test concurrent in-flight systems, and discover the industry-standard rules for structuring Go packages.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Progress:</strong>
+    <ul>
+      <li>🎉 <strong>Generic Queue Refactored:</strong> In <code>internal/lib/queue.go</code>, <code>Retries</code> is now correctly scoped per <code>Task[T]</code>. No more cross-goroutine state pollution!</li>
+      <li>✨ <strong>Singleflight Logic Implemented:</strong> <code>CachedInventory</code> in <code>internal/store/cached_inventory.go</code> correctly wraps <code>Get</code> with <code>c.sf.Do(key, ...)</code>!</li>
+      <li>💡 <strong>Tiny Queue Status Bug:</strong> In <code>internal/lib/queue.go</code>, check lines 147-151: if <code>tryProcess</code> fails, you set <code>task.Status = TaskStatusFailed</code>, but immediately follow with <code>task.Status = TaskStatusCompleted</code>! Add an <code>else</code> or return early so failed tasks stay failed.</li>
+    </ul>
+  </div>
+
+  <h2>1. Why Did Your Singleflight Test Fail? (Expected 1, Got 10)</h2>
+  <p>Your test assertion failed with:</p>
+  <pre><code>cached_inventory_test.go:42: expected Get to be called once, but got 10</code></pre>
+
+  <h3>The Mental Model: What Singleflight Actually Does</h3>
+  <p><strong><code>singleflight.Group</code> is NOT a persistent cache (like a map or Redis).</strong></p>
+  <p>It only deduplicates requests that are <strong>concurrently in-flight at the exact same moment</strong>. The instant the underlying function returns, the key is evicted from the group, and subsequent calls execute normally.</p>
+
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>Goroutine 1 calls sf.Do() &rarr; Starts mockStore.Get() &rarr; Finishes in 10 nanoseconds!</code></p>
+    <p><code>Goroutine 2 starts &rarr; Goroutine 1 is ALREADY DONE! &rarr; sf.Do() starts again!</code></p>
+  </div>
+
+  <p>In your mock store, <code>Get()</code> did not perform any network or disk I/O; it simply incremented an integer and returned instantly. As a result, the 10 goroutines executed <em>serially</em> one after another. No two goroutines were ever in-flight at the same time!</p>
+
+  <h3>How Senior Go Engineers Test Singleflight</h3>
+  <p>To test deduplication deterministically, you must ensure two conditions:</p>
+  <ol>
+    <li><strong>Simulated I/O Latency:</strong> Make the mock store take some time (e.g. <code>time.Sleep(25 * time.Millisecond)</code>) to keep the operation in-flight.</li>
+    <li><strong>Synchronized Launch Gate:</strong> Instead of launching goroutines in a loop that fires haphazardly, have every goroutine wait on a channel (<code>&lt;-start</code>) before calling <code>Get()</code>. Then <code>close(start)</code> to release all 10 goroutines at the exact same microsecond!</li>
+  </ol>
+
+  <h2>2. The Big Architectural Question: How Should Go Projects Be Structured?</h2>
+  <p>You asked an insightful architectural question:</p>
+  <blockquote>
+    <em>"would it not be cleaner to do a folder called <code>order</code> which has 'sql_store', 'model', etc., so you write <code>order.SQLStore</code> instead of <code>stores.OrderSQLStore</code>?"</em>
+  </blockquote>
+
+  <p>You noticed what every senior Go engineer discovers: <strong>Grouping packages by layer (<code>models/</code>, <code>stores/</code>, <code>controllers/</code>) is an anti-pattern in Go!</strong></p>
+
+  <h3>Why "Package-by-Layer" Hurts in Go:</h3>
+  <ol>
+    <li><strong>Stuttering:</strong> <code>stores.OrderSQLStore</code> repeats "store" twice.</li>
+    <li><strong>The Cyclic Dependency Trap:</strong> In Go, package cycles (<code>A &rarr; B &rarr; A</code>) are strictly illegal and fail to compile. Layered packages inevitably try to reference each other as features grow.</li>
+    <li><strong>Low Cohesion:</strong> Modifying a single feature requires hunting through 4 or 5 different folders.</li>
+  </ol>
+
+  <h3>The Two Idiomatic Industry Approaches:</h3>
+
+  <h4>Approach A: Ben Johnson's "Standard Package Layout" (Technology Subpackages)</h4>
+  <p>Used widely in production tools (like BoltDB and HashiCorp projects):</p>
+  <ul>
+    <li><code>internal/domain</code>: Contains pure domain models (<code>Order</code>, <code>Stock</code>) and interface definitions (<code>OrderStore</code>, <code>InventoryStore</code>). No database imports.</li>
+    <li><code>internal/sqlite</code>: Implements the interfaces using SQLite.
+      <pre><code>package sqlite
+
+type OrderStore struct { db *sql.DB }
+func NewOrderStore(db *sql.DB) *OrderStore { ... }</code></pre>
+      Look at how this reads to the caller in <code>main.go</code>:
+      <pre><code>import "myproject/internal/sqlite"
+
+orderStore := sqlite.NewOrderStore(db) // ✅ Zero stutter! Clean and expressive!</code></pre>
+    </li>
+    <li><code>internal/httpapi</code>: Implements the HTTP routes consuming <code>domain.OrderStore</code>.</li>
+  </ul>
+
+  <h4>Approach B: Package-by-Feature (Vertical Slices) — Your Idea!</h4>
+  <p>Used in modular monoliths and microservices:</p>
+  <ul>
+    <li><code>internal/order/</code>: Contains <code>order.go</code> (struct), <code>store.go</code> (persistence), and <code>handler.go</code> (HTTP).</li>
+    <li>Caller reads: <code>order.NewStore(db)</code>, <code>order.NewHandler(s)</code>.</li>
+    <li><strong>The Crucial Rule:</strong> If <code>order</code> needs to coordinate with <code>inventory</code>, they must never import each other directly! An orchestrator (like your <code>processor.PlaceOrderProcessor</code>) imports both and coordinates them.</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Fix Queue Status Override:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/queue.go"><code>internal/lib/queue.go</code></a> (around line 147), ensure <code>task.Status = TaskStatusCompleted</code> only runs when <code>err == nil</code>.</li>
+      <li><strong>Make <code>TestCachedInventory_Get</code> Pass:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/store/cached_inventory_test.go"><code>internal/store/cached_inventory_test.go</code></a>:
+        <ul>
+          <li>Add a small simulated delay in <code>mockInventoryStore.Get</code> (e.g. <code>time.Sleep(20 * time.Millisecond)</code>).</li>
+          <li>Synchronize the goroutine launch using a <code>start := make(chan struct{})</code> channel so all 10 goroutines hit <code>c.sf.Do</code> simultaneously while the first query is in-flight!</li>
+        </ul>
+      </li>
+      <li>Run the test suite:
+        <pre><code>go test -v -race ./internal/store/...</code></pre>
+        Watch <code>TestCachedInventory_Get</code> pass with flying colors!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0028-singleflight-and-thundering-herd-prevention.html">Previous: Lesson 0028</a> | Reference: <a href="../reference/0004-idiomatic-go-package-layout.html">Reference 0004: Package Layout</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
