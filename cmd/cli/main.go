@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	database "github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
 func main() {
@@ -51,12 +51,12 @@ func SeedDatabaseCommand() *cobra.Command {
 			}
 			defer db.Close()
 
-			itemStore, err := store.NewItemSQLiteStore(db)
+			itemStore, err := database.NewItemStore(db)
 			if err != nil {
 				slog.Error("Failed to create item store", "error", err)
 				os.Exit(1)
 			}
-			inventoryStore, err := store.NewInventorySQLiteStore(db)
+			inventoryStore, err := database.NewInventoryStore(db)
 			if err != nil {
 				slog.Error("Failed to create inventory store", "error", err)
 				os.Exit(1)

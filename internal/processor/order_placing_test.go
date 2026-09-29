@@ -11,7 +11,7 @@ import (
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	"github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
 func TestPlaceOrderProcessor_ProcessAndRollback(t *testing.T) {
@@ -130,21 +130,21 @@ func TestPlaceOrderProcessor_Process_ConcurrentOrders(t *testing.T) {
 	}
 }
 
-func getDefaults(t *testing.T) (*sql.DB, *store.ItemSQLite, *store.InventorySQLite, *store.OrderSqlite) {
+func getDefaults(t *testing.T) (*sql.DB, domain.ItemStore, domain.InventoryStore, domain.OrderStore) {
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
-	itemStore, err := store.NewItemSQLiteStore(db)
+	itemStore, err := sqlite.NewItemStore(db)
 	if err != nil {
 		t.Fatalf("Failed to create item store: %v", err)
 	}
-	orderStore, err := store.NewOrderSqliteStore(db)
+	orderStore, err := sqlite.NewOrderStore(db)
 	if err != nil {
 		t.Fatalf("Failed to create order store: %v", err)
 	}
-	inventoryStore, err := store.NewInventorySQLiteStore(db)
+	inventoryStore, err := sqlite.NewInventoryStore(db)
 	if err != nil {
 		t.Fatalf("Failed to create inventory store: %v", err)
 	}

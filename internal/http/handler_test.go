@@ -1,4 +1,4 @@
-package httpapi_test
+package http_test
 
 import (
 	"context"
@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
-	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	httpapi "github.com/GuustTaillieu/idiomatic-go/internal/http"
+	"github.com/GuustTaillieu/idiomatic-go/internal/memory"
 )
 
 func TestHandler_GetOrderRoute(t *testing.T) {
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
 	handler := httpapi.NewHandler(s, hc)
 
@@ -49,7 +49,7 @@ func TestHandler_GetOrderRoute(t *testing.T) {
 
 func TestHandler_CreateOrderRoute(t *testing.T) {
 	// Arrange
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
 	handler := httpapi.NewHandler(s, hc)
 
@@ -75,14 +75,14 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 	if result.ItemID != fakeItem.ID {
 		t.Errorf("Expected order item ID %s, got %s", fakeItem.ID, result.ItemID)
 	}
-	if result.Status != domain.StatusPending {
-		t.Errorf("Expected order status %s, got %s", domain.StatusPending, result.Status)
+	if result.Status != domain.OrderStatusPending {
+		t.Errorf("Expected order status %s, got %s", domain.OrderStatusPending, result.Status)
 	}
 }
 
 func TestHandler_Healthz(t *testing.T) {
 	// Arrange
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
 	handler := httpapi.NewHandler(s, hc)
 
@@ -109,7 +109,7 @@ func TestHandler_Healthz(t *testing.T) {
 
 func TestHandler_Readyz(t *testing.T) {
 	// Arrange
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
 	handler := httpapi.NewHandler(s, hc)
 
@@ -136,7 +136,7 @@ func TestHandler_Readyz(t *testing.T) {
 
 func TestHandler_Readyz_Unhealthy(t *testing.T) {
 	// Arrange
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	hc := &mockUnhealthyHealthChecker{}
 	handler := httpapi.NewHandler(s, hc)
 

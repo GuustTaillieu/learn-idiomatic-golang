@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
+	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
 type Pipeline[T any] struct {
-	processors []lib.Processor[T]
+	processors []domain.Processor[T]
 }
 
-func NewPipeline[T any](processors ...lib.Processor[T]) *Pipeline[T] {
+func NewPipeline[T any](processors ...domain.Processor[T]) *Pipeline[T] {
 	return &Pipeline[T]{processors: processors}
 }
 

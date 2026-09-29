@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	"github.com/GuustTaillieu/idiomatic-go/internal/memory"
+	"github.com/GuustTaillieu/idiomatic-go/internal/queue"
 )
 
 func TestOutboxDispatcher_DispatchesPendingOrders(t *testing.T) {
 	ctx := context.Background()
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	// Seed a PENDING order in the store
 	item := domain.NewItem("test-item")
 	order := domain.NewOrder(item.ID, 1)
@@ -19,7 +20,7 @@ func TestOutboxDispatcher_DispatchesPendingOrders(t *testing.T) {
 		t.Fatalf("Failed to save order: %v", err)
 	}
 	// Setup Queue and Dispatcher
-	q := domain.NewQueue(&fastProcessor{}, s, domain.WithBaseDelay(time.Millisecond))
+	q := queue.NewOrderQueue(&fastProcessor{}, s, queue.WithBaseDelay(time.Millisecond))
 	dispatcher := domain.NewOutboxDispatcher(s, q)
 
 	// Start worker, dispatch, and cleanly stop
@@ -34,8 +35,8 @@ func TestOutboxDispatcher_DispatchesPendingOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get order: %v", err)
 	}
-	if processedOrder.Status != domain.StatusCompleted {
-		t.Errorf("Expected status %s, got %s", domain.StatusCompleted, processedOrder.Status)
+	if processedOrder.Status != domain.OrderStatusCompleted {
+		t.Errorf("Expected status %s, got %s", domain.OrderStatusCompleted, processedOrder.Status)
 	}
 }
 

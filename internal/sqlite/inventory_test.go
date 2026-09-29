@@ -1,4 +1,4 @@
-package store_test
+package sqlite_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
 func TestInventorySQLiteStore_AddAndGetStock(t *testing.T) {
@@ -128,4 +129,21 @@ func TestInventorySQLiteStore_ReleaseStock(t *testing.T) {
 	if retrievedItem.Quantity != 10 {
 		t.Errorf("Expected stock to be 10 after release, got %d", retrievedItem.Quantity)
 	}
+}
+
+func BenchmarkInventory_CachedGet(b *testing.B) {
+	db := getTestDatabase(b)
+	cached, err := sqlite.NewInventoryStore(db)
+	if err != nil {
+		b.Fatalf("Failed to create InventorySQLiteStore: %v", err)
+	}
+	ctx := context.Background()
+	id := domain.ItemID(uuid.New())
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = cached.Get(ctx, id)
+		}
+	})
 }

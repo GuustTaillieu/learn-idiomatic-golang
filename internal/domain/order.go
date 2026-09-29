@@ -1,8 +1,8 @@
 package domain
 
 import (
+	"context"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -14,11 +14,11 @@ var ErrOrderNotFound = errors.New("order not found")
 type OrderStatus string
 
 const (
-	StatusPending    OrderStatus = "PENDING"
-	StatusRunning    OrderStatus = "RUNNING"
-	StatusCompleted  OrderStatus = "COMPLETED"
-	StatusFailed     OrderStatus = "FAILED"
-	StatusDeadLetter OrderStatus = "DEAD_LETTER"
+	OrderStatusPending    OrderStatus = "PENDING"
+	OrderStatusRunning    OrderStatus = "RUNNING"
+	OrderStatusCompleted  OrderStatus = "COMPLETED"
+	OrderStatusFailed     OrderStatus = "FAILED"
+	OrderStatusDeadLetter OrderStatus = "DEAD_LETTER"
 )
 
 type Order struct {
@@ -30,6 +30,13 @@ type Order struct {
 	MaxRetries int
 	CreatedAt  time.Time
 }
+
+type OrderStore interface {
+	Save(ctx context.Context, order *Order) error
+	Get(ctx context.Context, id OrderID) (*Order, error)
+	GetPendingOrders(ctx context.Context) ([]*Order, error)
+}
+
 type OrderOption func(*Order)
 
 func WithMaxRetries(maxRetries int) OrderOption {
@@ -49,7 +56,7 @@ func NewOrder(itemID ItemID, amount int, opts ...OrderOption) *Order {
 		ID:         OrderID(uuid.New()),
 		ItemID:     itemID,
 		Amount:     amount,
-		Status:     StatusPending,
+		Status:     OrderStatusPending,
 		Retries:    0,
 		MaxRetries: 3,
 		CreatedAt:  time.Now(),
@@ -64,15 +71,14 @@ type OrderID uuid.UUID
 
 var NilOrderID = OrderID(uuid.Nil())
 
-// MarshalJSON implements json.Marshaler
-func (id OrderID) MarshalJSON() ([]byte, error) {
-	return json.Marshal(uuid.UUID(id))
+// MarshalText implements encoding.TextMarshaler
+func (id OrderID) MarshalText() ([]byte, error) {
+	return uuid.UUID(id).MarshalText()
 }
 
-// UnmarshalJSON implements json.Unmarshaler
-func (id *OrderID) UnmarshalJSON(data []byte) error {
-	uuidPointer := (*uuid.UUID)(id)
-	return json.Unmarshal(data, uuidPointer)
+// UnmarshalText implements encoding.TextUnmarshaler
+func (id *OrderID) UnmarshalText(data []byte) error {
+	return (*uuid.UUID)(id).UnmarshalText(data)
 }
 
 // String implements fmt.Stringer
@@ -100,6 +106,10 @@ func (id *OrderID) Scan(src any) error {
 		*id = OrderID(u)
 		return nil
 	case []byte:
+		if len(v) == 16 {
+			*id = OrderID(v)
+			return nil
+		}
 		u, err := uuid.Parse(string(v))
 		if err != nil {
 			return err

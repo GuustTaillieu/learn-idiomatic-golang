@@ -1,8 +1,8 @@
 package domain
 
 import (
+	"context"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,25 +11,22 @@ import (
 
 var ErrItemNotFound = errors.New("item not found")
 
-type ItemID uuid.UUID
-
 type Item struct {
 	ID        ItemID
 	Name      string
 	CreatedAt time.Time
 }
 
-type ItemOption func(*Item)
-
-func WithID(id ItemID) ItemOption {
-	return func(i *Item) {
-		i.ID = id
-	}
+type ItemStore interface {
+	Save(ctx context.Context, item *Item) error
+	Get(ctx context.Context, id ItemID) (*Item, error)
 }
 
-func WithCreatedAt(createdAt time.Time) ItemOption {
+type ItemOption func(*Item)
+
+func WithItemID(id ItemID) ItemOption {
 	return func(i *Item) {
-		i.CreatedAt = createdAt
+		i.ID = id
 	}
 }
 
@@ -45,17 +42,18 @@ func NewItem(name string, opts ...ItemOption) *Item {
 	return i
 }
 
+type ItemID uuid.UUID
+
 var NilItemID = ItemID(uuid.Nil())
 
-// MarshalJSON implements json.Marshaler
-func (id ItemID) MarshalJSON() ([]byte, error) {
-	return json.Marshal(uuid.UUID(id))
+// MarshalText implements encoding.TextMarshaler
+func (id ItemID) MarshalText() ([]byte, error) {
+	return uuid.UUID(id).MarshalText()
 }
 
-// UnmarshalJSON implements json.Unmarshaler
-func (id *ItemID) UnmarshalJSON(data []byte) error {
-	uuidPointer := (*uuid.UUID)(id)
-	return json.Unmarshal(data, uuidPointer)
+// UnmarshalText implements encoding.TextUnmarshaler
+func (id *ItemID) UnmarshalText(data []byte) error {
+	return (*uuid.UUID)(id).UnmarshalText(data)
 }
 
 // String implements fmt.Stringer
@@ -83,6 +81,10 @@ func (id *ItemID) Scan(src any) error {
 		*id = ItemID(u)
 		return nil
 	case []byte:
+		if len(v) == 16 {
+			*id = ItemID(v)
+			return nil
+		}
 		u, err := uuid.Parse(string(v))
 		if err != nil {
 			return err

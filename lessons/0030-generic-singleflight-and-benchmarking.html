@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0030: Domain Type Polish, Generic Singleflight, & Benchmarking</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0030: Domain Type Polish, Generic Singleflight, & Benchmarking</h1>
+  <p><em>Target: Perfect your domain entity marshaling, build a type-safe generic singleflight group, and learn how senior Go engineers benchmark concurrency with <code>testing.B</code>.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Architecture Refactoring:</strong>
+    <ul>
+      <li>🏆 <strong>Package Layout Mastery:</strong> You successfully migrated to <code>internal/sqlite</code>, <code>internal/memory</code>, <code>internal/http</code>, <code>internal/queue</code>, and <code>internal/health</code>! Zero stutter, crystal clear responsibilities.</li>
+      <li>✨ <strong>Strong Domain Entity:</strong> Your <code>internal/domain/item.go</code> correctly implements <code>sql.Scanner</code>, <code>driver.Valuer</code>, and the Functional Options pattern!</li>
+      <li>💡 <strong>Singleflight Scope Trap in <code>internal/lib/db_cache.go</code>:</strong> In <code>RunWithCache[T]</code>, declaring <code>var sf singleflight.Group</code> inside the function body creates a brand new group on every invocation, so it can never deduplicate concurrent callers! Singleflight groups must be long-lived structs.</li>
+    </ul>
+  </div>
+
+  <h2>1. Deep Dive: Reviewing <code>internal/domain/item.go</code></h2>
+
+  <h3>A. Binary vs Hex UUIDs in <code>sql.Scanner</code></h3>
+  <p>In your <code>Scan</code> implementation:</p>
+  <pre><code>case []byte:
+    u, err := uuid.Parse(string(v)) // ⚠️ Gotcha!</code></pre>
+  <p>If a database driver returns a 16-byte raw binary UUID (such as an SQLite blob or PostgreSQL binary column), <code>string(v)</code> converts raw bytes into a garbled 16-character string instead of a 36-character hexadecimal string (<code>"6ba7b810-..."</code>). <code>uuid.Parse</code> will fail with a syntax error!</p>
+  <p><strong>The Senior Fix:</strong></p>
+  <pre><code>case []byte:
+    if len(v) == 16 {
+        u, err := uuid.FromBytes(v)
+        if err != nil {
+            return err
+        }
+        *id = ItemID(u)
+        return nil
+    }
+    u, err := uuid.Parse(string(v))
+    ...</code></pre>
+
+  <h3>B. Unmarshaling without Reflection</h3>
+  <p>In <code>UnmarshalJSON</code>, calling <code>json.Unmarshal(data, uuidPointer)</code> spins up Go's reflection engine and unmarshals recursively. Since you already have the underlying <code>uuid.UUID</code>, you can delegate directly:</p>
+  <pre><code>func (id *ItemID) UnmarshalJSON(data []byte) error {
+    return (*uuid.UUID)(id).UnmarshalJSON(data)
+}</code></pre>
+
+  <h3>C. When are Functional Options Idiomatic for Entities?</h3>
+  <p>Functional Options shine when:</p>
+  <ol>
+    <li>Configuring complex services with many options (e.g. <code>server.New(opts...)</code>, <code>queue.New(opts...)</code>).</li>
+    <li>Protecting invariants on unexported fields (e.g. ensuring <code>name != ""</code>).</li>
+  </ol>
+  <p>For pure data entities with exported fields (<code>ID</code>, <code>Name</code>, <code>CreatedAt</code>), standard struct literals (<code>Item{...}</code>) are zero-allocation. However, having <code>WithID</code> and <code>WithCreatedAt</code> is very practical when hydrating records from databases or in test factories!</p>
+
+  <h2>2. Turning <code>RunWithCache</code> into a Generic <code>Singleflight[T]</code></h2>
+  <p>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/db_cache.go"><code>internal/lib/db_cache.go</code></a>, you attempted a generic wrapper around singleflight. That's a great instinct! To make it work, the group must be a <strong>struct</strong> that lives across requests:</p>
+
+  <pre><code>package lib
+
+import (
+    "context"
+    "fmt"
+    "golang.org/x/sync/singleflight"
+)
+
+type Singleflight[T any] struct {
+    group singleflight.Group
+}
+
+func (s *Singleflight[T]) Do(key string, fn func() (T, error)) (T, error) {
+    var zero T
+    result, err, _ := s.group.Do(key, func() (any, error) {
+        return fn()
+    })
+    if err != nil {
+        return zero, err
+    }
+    val, ok := result.(T)
+    if !ok {
+        return zero, fmt.Errorf("unexpected type: %T", result)
+    }
+    return val, nil
+}</code></pre>
+
+  <p>Now any store can embed <code>Singleflight[*domain.Stock]</code> as a field, giving 100% type-safe deduplication without any type casting at the call site!</p>
+
+  <h2>3. Senior Concurrency Tooling: Benchmarking with <code>testing.B</code></h2>
+  <p>How do senior engineers prove their singleflight or caching layer actually makes their software faster? With Go's built-in benchmark harness!</p>
+
+  <pre><code>func BenchmarkCachedInventory_Get(b *testing.B) {
+    store := NewMockStore()
+    cached := NewCachedInventory(store)
+    ctx := context.Background()
+    id := domain.NewItemID()
+
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            _, _ = cached.Get(ctx, id)
+        }
+    })
+}</code></pre>
+  <p>Run it with memory allocation stats:</p>
+  <pre><code>go test -bench=. -benchmem ./internal/sqlite/...</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Polish Item Entity:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/item.go"><code>internal/domain/item.go</code></a>, update <code>Scan</code> to handle 16-byte raw slices with <code>uuid.FromBytes</code>, and simplify <code>UnmarshalJSON</code>.</li>
+      <li><strong>Fix Generic Singleflight:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/db_cache.go"><code>internal/lib/db_cache.go</code></a>, implement <code>type Singleflight[T any] struct { group singleflight.Group }</code> with a <code>Do(key string, fn func() (T, error)) (T, error)</code> method.</li>
+      <li><strong>Fix Compile Error in Tests:</strong> In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/sqlite/inventory_test.go"><code>internal/sqlite/inventory_test.go</code></a>, update line 141 so it uses your cached inventory or <code>lib.Singleflight</code>.</li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+        and verify all packages compile and pass!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0029-package-layout-and-singleflight-testing.html">Previous: Lesson 0029</a> | Reference: <a href="../reference/0004-idiomatic-go-package-layout.html">Reference 0004: Package Layout</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

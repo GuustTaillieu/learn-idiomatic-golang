@@ -13,11 +13,12 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
-	healthchecker "github.com/GuustTaillieu/idiomatic-go/internal/healthchecker"
-	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi"
-	"github.com/GuustTaillieu/idiomatic-go/internal/httpapi/middleware"
+	"github.com/GuustTaillieu/idiomatic-go/internal/health"
+	httpapi "github.com/GuustTaillieu/idiomatic-go/internal/http"
+	"github.com/GuustTaillieu/idiomatic-go/internal/http/middleware"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	"github.com/GuustTaillieu/idiomatic-go/internal/queue"
+	database "github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
 func main() {
@@ -31,23 +32,23 @@ func main() {
 	}
 	defer db.Close()
 
-	orderStore, err := store.NewOrderSqliteStore(db)
+	orderStore, err := database.NewOrderStore(db)
 	if err != nil {
 		slog.Error("Failed to create order store", "error", err)
 		os.Exit(1)
 	}
-	inventoryStore, err := store.NewInventorySQLiteStore(db)
+	inventoryStore, err := database.NewInventoryStore(db)
 	if err != nil {
 		slog.Error("Failed to create inventory store", "error", err)
 		os.Exit(1)
 	}
 	p1 := processor.NewOrderPlacing(db, inventoryStore, orderStore)
-	p2 := processor.NewPaying()
+	p2 := processor.NewPaying[*domain.Order]()
 	p := processor.NewPipeline(p1, p2)
-	queue := domain.NewQueue(p, orderStore)
+	queue := queue.New(p, 100)
 	dispatcher := domain.NewOutboxDispatcher(orderStore, queue)
 
-	healthChecker := healthchecker.NewMultiHealthChecker(store.NewDBHealthChecker(db), queue)
+	healthChecker := health.NewMultiChecker(health.NewDatabaseChecker(db), queue)
 
 	// Start 3 workers
 	queue.Start(ctx, 3)

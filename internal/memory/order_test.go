@@ -1,4 +1,4 @@
-package store_test
+package memory_test
 
 import (
 	"context"
@@ -7,17 +7,17 @@ import (
 	"uuid"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	"github.com/GuustTaillieu/idiomatic-go/internal/memory"
 )
 
 func TestOrderMemoryStore_StoringAndGettingAOrder_ShouldWork(t *testing.T) {
 	ctx := context.Background()
-	is := store.NewItemMemoryStore()
+	is := memory.NewItemStore()
 	item := domain.NewItem("item1")
 	if err := is.Save(ctx, item); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	os := store.NewOrderMemoryStore()
+	os := memory.NewOrderStore()
 	order := domain.NewOrder(item.ID, 5)
 
 	if err := os.Save(ctx, order); err != nil {
@@ -33,7 +33,7 @@ func TestOrderMemoryStore_StoringAndGettingAOrder_ShouldWork(t *testing.T) {
 
 func TestOrderMemoryStore_GettingANonExistentOrder_ShouldReturnError(t *testing.T) {
 	ctx := context.Background()
-	os := store.NewOrderMemoryStore()
+	os := memory.NewOrderStore()
 
 	if res, err := os.Get(ctx, domain.OrderID(uuid.New())); !errors.Is(err, domain.ErrOrderNotFound) {
 		t.Fatalf("Expected ErrOrderNotFound, got %v", err)

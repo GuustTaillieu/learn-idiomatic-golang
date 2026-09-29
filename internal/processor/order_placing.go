@@ -9,25 +9,21 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type OrderStore interface {
-	Save(ctx context.Context, order *domain.Order) error
-}
-
-type OrderPlacing struct {
+type OrderPlacing[T any] struct {
 	db             *sql.DB
 	InventoryStore domain.InventoryStore
-	OrderStore     OrderStore
+	OrderStore     domain.OrderStore
 }
 
-func NewOrderPlacing(db *sql.DB, inventoryStore domain.InventoryStore, orderStore OrderStore) *OrderPlacing {
-	return &OrderPlacing{
+func NewOrderPlacing(db *sql.DB, inventoryStore domain.InventoryStore, orderStore domain.OrderStore) *OrderPlacing[domain.Order] {
+	return &OrderPlacing[domain.Order]{
 		db:             db,
 		InventoryStore: inventoryStore,
 		OrderStore:     orderStore,
 	}
 }
 
-func (p *OrderPlacing) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (p *OrderPlacing[T]) Process(ctx context.Context, order *domain.Order) (func() error, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

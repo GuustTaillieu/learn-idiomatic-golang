@@ -1,4 +1,4 @@
-package store
+package memory
 
 import (
 	"context"
@@ -7,18 +7,18 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
 
-type OrderMemory struct {
+type orderStore struct {
 	mu     sync.RWMutex
 	orders map[domain.OrderID]*domain.Order
 }
 
-func NewOrderMemoryStore() *OrderMemory {
-	return &OrderMemory{
+func NewOrderStore() *orderStore {
+	return &orderStore{
 		orders: make(map[domain.OrderID]*domain.Order),
 	}
 }
 
-func (s *OrderMemory) Save(ctx context.Context, order *domain.Order) error {
+func (s *orderStore) Save(ctx context.Context, order *domain.Order) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -26,7 +26,7 @@ func (s *OrderMemory) Save(ctx context.Context, order *domain.Order) error {
 	return nil
 }
 
-func (s *OrderMemory) Get(ctx context.Context, id domain.OrderID) (*domain.Order, error) {
+func (s *orderStore) Get(ctx context.Context, id domain.OrderID) (*domain.Order, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -38,7 +38,7 @@ func (s *OrderMemory) Get(ctx context.Context, id domain.OrderID) (*domain.Order
 	return order, nil
 }
 
-func (s *OrderMemory) GetAll(ctx context.Context) ([]*domain.Order, error) {
+func (s *orderStore) GetAll(ctx context.Context) ([]*domain.Order, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -50,13 +50,13 @@ func (s *OrderMemory) GetAll(ctx context.Context) ([]*domain.Order, error) {
 	return orders, nil
 }
 
-func (s *OrderMemory) GetPendingOrders(ctx context.Context) ([]*domain.Order, error) {
+func (s *orderStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	pendingOrders := make([]*domain.Order, 0)
 	for _, order := range s.orders {
-		if order.Status == domain.StatusPending {
+		if order.Status == domain.OrderStatusPending {
 			pendingOrders = append(pendingOrders, order)
 		}
 	}

@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -41,15 +40,14 @@ type StockID uuid.UUID
 
 var NilStockID = StockID(uuid.Nil())
 
-// MarshalJSON implements json.Marshaler
-func (id StockID) MarshalJSON() ([]byte, error) {
-	return json.Marshal(uuid.UUID(id))
+// MarshalText implements encoding.TextMarshaler
+func (id StockID) MarshalText() ([]byte, error) {
+	return uuid.UUID(id).MarshalText()
 }
 
-// UnmarshalJSON implements json.Unmarshaler
-func (id *StockID) UnmarshalJSON(data []byte) error {
-	uuidPointer := (*uuid.UUID)(id)
-	return json.Unmarshal(data, uuidPointer)
+// UnmarshalText implements encoding.TextUnmarshaler
+func (id *StockID) UnmarshalText(data []byte) error {
+	return (*uuid.UUID)(id).UnmarshalText(data)
 }
 
 // String implements fmt.Stringer
@@ -77,6 +75,10 @@ func (id *StockID) Scan(src any) error {
 		*id = StockID(u)
 		return nil
 	case []byte:
+		if len(v) == 16 {
+			*id = StockID(v)
+			return nil
+		}
 		u, err := uuid.Parse(string(v))
 		if err != nil {
 			return err

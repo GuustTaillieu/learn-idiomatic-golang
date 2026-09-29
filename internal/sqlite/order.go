@@ -1,4 +1,4 @@
-package store
+package sqlite
 
 import (
 	"context"
@@ -10,11 +10,11 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
 )
 
-type OrderSqlite struct {
+type OrderStore struct {
 	db lib.DBTX
 }
 
-func NewOrderSqliteStore(db *sql.DB) (*OrderSqlite, error) {
+func NewOrderStore(db *sql.DB) (*OrderStore, error) {
 	query := `
 		CREATE TABLE IF NOT EXISTS orders (
 			id TEXT PRIMARY KEY,
@@ -27,17 +27,17 @@ func NewOrderSqliteStore(db *sql.DB) (*OrderSqlite, error) {
 	if _, err := db.Exec(query); err != nil {
 		return nil, fmt.Errorf("failed to create orders table: %w", err)
 	}
-	return &OrderSqlite{db: db}, nil
+	return &OrderStore{db: db}, nil
 }
 
-func (s *OrderSqlite) getDB(ctx context.Context) lib.DBTX {
+func (s *OrderStore) getDB(ctx context.Context) lib.DBTX {
 	if tx, ok := lib.TxFromContext(ctx); ok {
 		return tx
 	}
 	return s.db
 }
 
-func (s *OrderSqlite) Save(ctx context.Context, order *domain.Order) error {
+func (s *OrderStore) Save(ctx context.Context, order *domain.Order) error {
 	query := `
 		INSERT INTO orders (id, item_id, amount, status, created_at)
 		VALUES (?, ?, ?, ?, ?)
@@ -52,7 +52,7 @@ func (s *OrderSqlite) Save(ctx context.Context, order *domain.Order) error {
 	return nil
 }
 
-func (s *OrderSqlite) Get(ctx context.Context, id domain.OrderID) (*domain.Order, error) {
+func (s *OrderStore) Get(ctx context.Context, id domain.OrderID) (*domain.Order, error) {
 	query := `
 		SELECT id, item_id, amount, status, created_at
 		FROM orders
@@ -68,7 +68,7 @@ func (s *OrderSqlite) Get(ctx context.Context, id domain.OrderID) (*domain.Order
 	return &order, nil
 }
 
-func (s *OrderSqlite) GetPendingOrders(ctx context.Context) ([]*domain.Order, error) {
+func (s *OrderStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, error) {
 	// PUT LIMIT TO 50
 	query := `
 		SELECT id, item_id, amount, status, created_at
@@ -76,7 +76,7 @@ func (s *OrderSqlite) GetPendingOrders(ctx context.Context) ([]*domain.Order, er
 		WHERE status = ?
 		LIMIT 50
 		ORDER BY created_at ASC;`
-	rows, err := s.getDB(ctx).QueryContext(ctx, query, domain.StatusPending)
+	rows, err := s.getDB(ctx).QueryContext(ctx, query, domain.OrderStatusPending)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending orders: %w", err)
 	}

@@ -1,4 +1,4 @@
-package store_test
+package sqlite_test
 
 import (
 	"context"
@@ -69,7 +69,7 @@ func TestOrderSQLiteStore_SavingOrderTwice_ShouldUpdateExistingOrder(t *testing.
 
 	// Act
 	os.Save(ctx, order)
-	order.Status = domain.StatusCompleted
+	order.Status = domain.OrderStatusCompleted
 	os.Save(ctx, order)
 	savedOrder, err := os.Get(ctx, order.ID)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestOrderSQLiteStore_SavingOrderTwice_ShouldUpdateExistingOrder(t *testing.
 	if savedOrder.ItemID != order.ItemID {
 		t.Fatalf("Expected order Payload %v, got %v", "updated-order1", savedOrder.ItemID)
 	}
-	if savedOrder.Status != domain.StatusCompleted {
-		t.Fatalf("Expected order Status %v, got %v", domain.StatusCompleted, savedOrder.Status)
+	if savedOrder.Status != domain.OrderStatusCompleted {
+		t.Fatalf("Expected order Status %v, got %v", domain.OrderStatusCompleted, savedOrder.Status)
 	}
 }

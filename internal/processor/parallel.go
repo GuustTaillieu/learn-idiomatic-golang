@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
+	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
 
 type Parallel[T any] struct {
-	processors []lib.Processor[T]
+	processors []domain.Processor[T]
 }
 
-func NewParallel[T any](processors ...lib.Processor[T]) *Parallel[T] {
+func NewParallel[T any](processors ...domain.Processor[T]) *Parallel[T] {
 	return &Parallel[T]{
 		processors: processors,
 	}

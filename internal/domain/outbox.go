@@ -7,10 +7,10 @@ import (
 
 type OutboxDispatcher struct {
 	OrderStore OrderStore
-	Queue      *Queue
+	Queue      Queuer
 }
 
-func NewOutboxDispatcher(orderStore OrderStore, queue *Queue) *OutboxDispatcher {
+func NewOutboxDispatcher(orderStore OrderStore, queue Queuer) *OutboxDispatcher {
 	return &OutboxDispatcher{
 		OrderStore: orderStore,
 		Queue:      queue,

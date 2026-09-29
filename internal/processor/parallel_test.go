@@ -42,8 +42,8 @@ func TestParallelProcessor_Process(t *testing.T) {
 
 func TestParallelProcessor_Process_CancellationOnFailure(t *testing.T) {
 	// Preparation
-	mock1 := &waitingMockProcessor{timeout: 50 * time.Millisecond}
-	mock2 := &failingMockProcessor{timeout: 10 * time.Millisecond}
+	mock1 := &waitingMockProcessor[any]{timeout: 50 * time.Millisecond}
+	mock2 := &failingMockProcessor[any]{timeout: 10 * time.Millisecond}
 	p := processor.NewParallel(mock1, mock2)
 	order := domain.NewOrder(domain.ItemID(uuid.New()), 1)
 
@@ -78,20 +78,20 @@ func (m *mockProcessor) Process(ctx context.Context, order *domain.Order) (func(
 	}, nil
 }
 
-type failingMockProcessor struct {
+type failingMockProcessor[T any] struct {
 	timeout time.Duration
 }
 
-func (m *failingMockProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (m *failingMockProcessor[T]) Process(ctx context.Context, item T) (func() error, error) {
 	time.Sleep(m.timeout)
 	return nil, fmt.Errorf("mock processor failed")
 }
 
-type waitingMockProcessor struct {
+type waitingMockProcessor[T any] struct {
 	timeout time.Duration
 }
 
-func (m *waitingMockProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (m *waitingMockProcessor[T]) Process(ctx context.Context, item T) (func() error, error) {
 	select {
 	case <-time.After(m.timeout):
 		return func() error {

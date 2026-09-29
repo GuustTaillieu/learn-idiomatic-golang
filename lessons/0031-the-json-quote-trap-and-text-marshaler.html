@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0031: The JSON Quote Trap & Go's TextMarshaler Standard</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0031: The JSON Quote Trap & Go's TextMarshaler Standard</h1>
+  <p><em>Target: Understand why raw JSON unmarshaling fails on string types, and discover why Go standardizes scalar types on TextMarshaler.</em></p>
+
+  <div class="callout">
+    <strong>Celebration:</strong>
+    <ul>
+      <li>🎉 <strong>Generic Singleflight is Working!</strong> Your <code>Singleflight[T]</code> in <code>internal/lib/db_cache.go</code> passed its test with 0 data races!</li>
+      <li>🎉 <strong>Almost 100% Green!</strong> 6 out of 7 packages pass with 0 races across SQLite, Processor, Queue, Domain, Lib, and Memory!</li>
+    </ul>
+  </div>
+
+  <h2>1. Why <code>uuid.FromBytes</code> Doesn't Exist in Go 1.27</h2>
+  <p>In older third-party packages like <code>github.com/google/uuid</code>, there was a helper function <code>uuid.FromBytes(b)</code>.</p>
+  <p>In Go 1.27's standard library <code>package uuid</code>, UUID is defined as:</p>
+  <pre><code>type UUID [16]byte</code></pre>
+  <p>Because UUID <em>is</em> a 16-byte array, Go has built-in slice-to-array conversion syntax (since Go 1.20). You don't need a function; the language does it natively:</p>
+  <pre><code>case []byte:
+    if len(v) == 16 {
+        *id = ItemID(v) // or ItemID([16]byte(v))
+        return nil
+    }
+    // If it's a 36-byte hex string (e.g. SQLite text column as bytes):
+    u, err := uuid.Parse(string(v))
+    ...</code></pre>
+
+  <h2>2. The "JSON Quote Trap": Why <code>UnmarshalText</code> Failed</h2>
+  <p>In <code>internal/domain/item.go</code>, you wrote:</p>
+  <pre><code>func (id *ItemID) UnmarshalJSON(data []byte) error {
+    return (*uuid.UUID)(id).UnmarshalText(data) // ⚠️ Fails with "invalid uuid"
+}</code></pre>
+
+  <h3>What Happened Behind the Scenes:</h3>
+  <p>When JSON unmarshals a string value like <code>{"item_id": "c58a3430-8057-..."}</code>, <code>UnmarshalJSON</code> receives the <strong>raw JSON token</strong>, which includes the enclosing double quotes:</p>
+  <pre><code>data = []byte("\"c58a3430-8057-...\"") // Length is 38 bytes, starts and ends with "</code></pre>
+  <p><code>uuid.UUID.UnmarshalText</code> expects exactly 36 raw hexadecimal characters without quotes. When it sees <code>"</code> as the first byte, it immediately aborts with <code>invalid uuid</code>!</p>
+  <p>This is why <code>TestHandler_GetOrderRoute</code> and <code>TestHandler_CreateOrderRoute</code> failed: the HTTP handler could not decode incoming or outgoing JSON requests containing <code>ItemID</code>.</p>
+
+  <h2>3. The Two Idiomatic Go Solutions</h2>
+
+  <h3>Solution A: Delegate to <code>json.Unmarshal</code> (Like in <code>order.go</code>)</h3>
+  <p>Let <code>encoding/json</code> unquote the string first:</p>
+  <pre><code>func (id *ItemID) UnmarshalJSON(data []byte) error {
+    return json.Unmarshal(data, (*uuid.UUID)(id))
+}</code></pre>
+
+  <h3>Solution B: The Industry Standard for Scalar Types (TextMarshaler)</h3>
+  <p>In idiomatic Go, custom scalar types (like UUIDs, IP addresses, Money, and timestamps) implement <code>encoding.TextMarshaler</code> and <code>encoding.TextUnmarshaler</code>:</p>
+  <pre><code>// MarshalText implements encoding.TextMarshaler
+func (id ItemID) MarshalText() ([]byte, error) {
+    return uuid.UUID(id).MarshalText()
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler
+func (id *ItemID) UnmarshalText(data []byte) error {
+    return (*uuid.UUID)(id).UnmarshalText(data)
+}</code></pre>
+  <p><strong>Why is this superior?</strong></p>
+  <ul>
+    <li><code>encoding/json</code> natively supports <code>TextMarshaler</code> and <code>TextUnmarshaler</code>! It automatically adds quotes when marshaling and strips quotes before passing bytes to <code>UnmarshalText</code>.</li>
+    <li>You can <strong>delete</strong> <code>MarshalJSON</code> and <code>UnmarshalJSON</code> entirely!</li>
+    <li>It also works seamlessly with XML, YAML, URL query parameters, and CLI flags.</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/item.go"><code>internal/domain/item.go</code></a>:
+        <ul>
+          <li>Fix <code>UnmarshalJSON</code> (or switch to <code>MarshalText</code> / <code>UnmarshalText</code>).</li>
+          <li>In <code>Scan</code>, handle 16-byte raw binary slices with direct slice-to-array conversion: <code>*id = ItemID(v)</code> (or <code>ItemID([16]byte(v))</code>).</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+      <li>Watch all 7 packages turn 100% GREEN under the race detector!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0030-generic-singleflight-and-benchmarking.html">Previous: Lesson 0030</a> | Reference: <a href="../reference/0004-idiomatic-go-package-layout.html">Reference 0004: Package Layout</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

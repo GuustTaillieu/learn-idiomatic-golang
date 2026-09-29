@@ -1,4 +1,4 @@
-package domain_test
+package queue_test
 
 import (
 	"context"
@@ -9,16 +9,17 @@ import (
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
+	"github.com/GuustTaillieu/idiomatic-go/internal/memory"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
-	"github.com/GuustTaillieu/idiomatic-go/internal/store"
+	"github.com/GuustTaillieu/idiomatic-go/internal/queue"
 )
 
-func TestQueue_SubmitAfterStop(t *testing.T) {
+func TestOrderQueue_SubmitAfterStop(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	p := processor.NewPaying()
-	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	p := processor.NewPaying[*domain.Order]()
+	s := memory.NewOrderStore()
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -28,17 +29,17 @@ func TestQueue_SubmitAfterStop(t *testing.T) {
 	err := q.Submit(ctx, order)
 
 	// Assert
-	if !errors.Is(err, domain.ErrQueueClosed) {
+	if !errors.Is(err, queue.ErrQueueClosed) {
 		t.Errorf("Expected error when submitting after stop: %v", err)
 	}
 }
 
-func TestQueue_StoppingAfterProcessing_StoresAllOrdersAsCompleted(t *testing.T) {
+func TestOrderQueue_StoppingAfterProcessing_StoresAllOrdersAsCompleted(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	p := processor.NewPaying()
-	s := store.NewOrderMemoryStore()
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	p := processor.NewPaying[*domain.Order]()
+	s := memory.NewOrderStore()
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 
 	// Act
@@ -55,20 +56,20 @@ func TestQueue_StoppingAfterProcessing_StoresAllOrdersAsCompleted(t *testing.T) 
 
 	// Assert
 	for _, v := range orders {
-		if v.Status != domain.StatusCompleted {
+		if v.Status != domain.OrderStatusCompleted {
 			t.Errorf("Expected order to be completed, got status %v", v.Status)
 		}
 	}
 }
 
-func TestQueue_MultiProcessor_SuccessfulProcessing(t *testing.T) {
+func TestOrderQueue_MultiProcessor_SuccessfulProcessing(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	s := store.NewOrderMemoryStore()
-	p1 := processor.NewPaying()
+	s := memory.NewOrderStore()
+	p1 := processor.NewPaying[*domain.Order]()
 	p2 := &ChangeAmountProcessor{s}
 	p := processor.NewPipeline(p1, p2)
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -82,7 +83,7 @@ func TestQueue_MultiProcessor_SuccessfulProcessing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get order from store: %v", err)
 	}
-	if storedOrder.Status != domain.StatusCompleted {
+	if storedOrder.Status != domain.OrderStatusCompleted {
 		t.Errorf("Expected order to be completed, got status %v", storedOrder.Status)
 	}
 }
@@ -90,12 +91,12 @@ func TestQueue_MultiProcessor_SuccessfulProcessing(t *testing.T) {
 func TestMultiProcessor_FailedProcessing_ShouldRollbackAndMarkAsFailed(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	s := store.NewOrderMemoryStore()
-	p1 := processor.NewPaying()
+	s := memory.NewOrderStore()
+	p1 := processor.NewPaying[*domain.Order]()
 	p2 := &ChangeAmountProcessor{s}
 	p3 := &FailingProcessor{s}
 	p := processor.NewPipeline(p1, p2, p3)
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -109,7 +110,7 @@ func TestMultiProcessor_FailedProcessing_ShouldRollbackAndMarkAsFailed(t *testin
 	if err != nil {
 		t.Fatalf("Failed to get order from store: %v", err)
 	}
-	if storedOrder.Status != domain.StatusFailed {
+	if storedOrder.Status != domain.OrderStatusFailed {
 		t.Errorf("Expected order to be failed, got status %v", storedOrder.Status)
 	}
 	if storedOrder.Amount != 5 {
@@ -120,11 +121,11 @@ func TestMultiProcessor_FailedProcessing_ShouldRollbackAndMarkAsFailed(t *testin
 func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldSucceedAfterRetries(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	p1 := &RetryableProcessor{OrderStore: s, FailAmount: 2}
 	p2 := &ChangeAmountProcessor{OrderStore: s}
 	p := processor.NewPipeline(p1, p2)
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -138,7 +139,7 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldSucceedAfterRetries(t
 	if err != nil {
 		t.Fatalf("Failed to get order from store: %v", err)
 	}
-	if storedOrder.Status != domain.StatusCompleted {
+	if storedOrder.Status != domain.OrderStatusCompleted {
 		t.Errorf("Expected order to be completed, got status %v", storedOrder.Status)
 	}
 }
@@ -146,11 +147,11 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldSucceedAfterRetries(t
 func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldFailAfterMaxRetries(t *testing.T) {
 	// Preparation
 	ctx := context.Background()
-	s := store.NewOrderMemoryStore()
+	s := memory.NewOrderStore()
 	p1 := &RetryableProcessor{OrderStore: s, FailAmount: 5}
 	p2 := &ChangeAmountProcessor{OrderStore: s}
 	p := processor.NewPipeline(p1, p2)
-	q := domain.NewQueue(p, s, domain.WithBaseDelay(time.Millisecond))
+	q := queue.NewOrderQueue(p, s, queue.WithBaseDelay(time.Millisecond))
 	item := domain.NewItem("payload")
 	order := domain.NewOrder(item.ID, 5)
 
@@ -165,13 +166,13 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldFailAfterMaxRetries(t
 	if err != nil {
 		t.Fatalf("Failed to get order from store: %v", err)
 	}
-	if storedOrder.Status != domain.StatusDeadLetter {
+	if storedOrder.Status != domain.OrderStatusDeadLetter {
 		t.Errorf("Expected order to be a dead letter, got status %v", storedOrder.Status)
 	}
 }
 
 type RetryableProcessor struct {
-	OrderStore *store.OrderMemory
+	OrderStore domain.OrderStore
 	FailAmount int
 }
 
@@ -191,7 +192,7 @@ func (r *RetryableProcessor) Process(ctx context.Context, order *domain.Order) (
 }
 
 type ChangeAmountProcessor struct {
-	OrderStore *store.OrderMemory
+	OrderStore domain.OrderStore
 }
 
 func (f *ChangeAmountProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
@@ -207,7 +208,7 @@ func (f *ChangeAmountProcessor) Process(ctx context.Context, order *domain.Order
 }
 
 type FailingProcessor struct {
-	OrderStore *store.OrderMemory
+	OrderStore domain.OrderStore
 }
 
 func (f *FailingProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
