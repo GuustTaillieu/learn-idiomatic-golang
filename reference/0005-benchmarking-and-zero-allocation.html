@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Benchmarking, Escape Analysis & Zero-Allocation Go</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Benchmarking, Escape Analysis & Zero-Allocation Go</h1>
+  <p><em>The senior Go engineer's cheat sheet for writing, measuring, and optimizing mechanical sympathy and memory throughput.</em></p>
+
+  <div class="callout">
+    <strong>The Golden Rule of Go Performance:</strong>
+    <blockquote>
+      <em>"Do not guess. Benchmark, profile, and verify with <code>-benchmem</code> and compiler escape analysis."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Anatomy of a Benchmark Function</h2>
+  <pre><code>func BenchmarkProcessOrder(b *testing.B) {
+    // 1. Expensive setup (runs once outside the loop)
+    store := setupDatabase()
+    order := domain.NewOrder(...)
+
+    // 2. Reset the timer so setup time doesn't taint measurements!
+    b.ResetTimer()
+    b.ReportAllocs() // Equivalent to running with -benchmem
+
+    // 3. The loop: b.N is dynamically tuned by the Go runtime
+    for b.Loop() { // Go 1.24+ idiomatic loop (or for i := 0; i < b.N; i++)
+        process(order)
+    }
+}</code></pre>
+
+  <h2>2. Essential Benchmark CLI Commands</h2>
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Command</th>
+        <th style="padding: 8px;">Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go test -bench=. ./...</code></td>
+        <td style="padding: 8px;">Runs all benchmarks across all packages.</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go test -bench=. -benchmem ./...</code></td>
+        <td style="padding: 8px;">Reports heap bytes allocated (<code>B/op</code>) and allocation count (<code>allocs/op</code>).</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go test -bench=BenchmarkName -count=5</code></td>
+        <td style="padding: 8px;">Runs the benchmark 5 times to check for jitter and statistical stability.</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><code>go build -gcflags="-m" ./...</code></td>
+        <td style="padding: 8px;">Shows the Go compiler's <strong>escape analysis</strong> (which variables escape to heap).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Interpreting Benchmark Output</h2>
+  <pre><code>BenchmarkSerialization-8    5000000    240.5 ns/op    128 B/op    2 allocs/op
+│                           │          │              │           └── Heap allocations per op
+│                           │          │              └────────────── Bytes allocated on heap per op
+│                           │          └───────────────────────────── Average time per execution
+│                           └──────────────────────────────────────── Number of iterations run
+└──────────────────────────────────────────────────────────────────── GOMAXPROCS (CPU cores)</code></pre>
+
+  <h2>4. The <code>sync.Pool</code> Pattern for Zero Allocations</h2>
+  <p>Used in high-throughput hot paths (JSON serialization, buffer reuse, byte slices) to relieve the Garbage Collector:</p>
+
+  <pre><code>var bufferPool = sync.Pool{
+    New: func() any {
+        // Allocated on heap once when pool is empty
+        return new(bytes.Buffer)
+    },
+}
+
+func FormatOrder(o *domain.Order) string {
+    // 1. Borrow from pool
+    buf := bufferPool.Get().(*bytes.Buffer)
+    // 2. CRITICAL: Reset buffer state before using!
+    buf.Reset()
+    // 3. Always return to pool via defer
+    defer bufferPool.Put(buf)
+
+    buf.WriteString("Order: ")
+    buf.WriteString(o.ID.String())
+    return buf.String()
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0005 | <a href="0004-idiomatic-go-package-layout.html">Reference 0004: Package Layout</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

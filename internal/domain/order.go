@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -31,7 +32,7 @@ type Order struct {
 	CreatedAt  time.Time
 }
 
-type OrderStore interface {
+type OrderStorer interface {
 	Save(ctx context.Context, order *Order) error
 	Get(ctx context.Context, id OrderID) (*Order, error)
 	GetPendingOrders(ctx context.Context) ([]*Order, error)
@@ -51,6 +52,8 @@ func WithOrderStatus(status OrderStatus) OrderOption {
 	}
 }
 
+type OrderID uuid.UUID
+
 func NewOrder(itemID ItemID, amount int, opts ...OrderOption) *Order {
 	o := &Order{
 		ID:         OrderID(uuid.New()),
@@ -67,7 +70,16 @@ func NewOrder(itemID ItemID, amount int, opts ...OrderOption) *Order {
 	return o
 }
 
-type OrderID uuid.UUID
+func (o *Order) MarshalJSON() ([]byte, error) {
+	type Alias Order
+	return json.Marshal(&struct {
+		ID string `json:"id"`
+		*Alias
+	}{
+		ID:    o.ID.String(),
+		Alias: (*Alias)(o),
+	})
+}
 
 var NilOrderID = OrderID(uuid.Nil())
 

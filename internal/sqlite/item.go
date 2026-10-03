@@ -12,7 +12,7 @@ type itemStore struct {
 	db *sql.DB
 }
 
-func NewItemStore(db *sql.DB) (domain.ItemStore, error) {
+func NewItemStore(db *sql.DB) (domain.ItemStorer, error) {
 	query := `
 		CREATE TABLE IF NOT EXISTS items (
 			id TEXT PRIMARY KEY,

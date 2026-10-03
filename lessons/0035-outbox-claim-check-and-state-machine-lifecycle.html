@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0035: The Outbox Claim Check, State Machine Lifecycle, & Race-Free Persistence</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0035: The Outbox Claim Check, State Machine Lifecycle, & Race-Free Persistence</h1>
+  <p><em>Target: Fix the outbox infinite loop properly, understand why lifecycle state transitions must never run in a parallel saga, and guarantee bulletproof state consistency.</em></p>
+
+  <div class="callout">
+    <strong>Brilliant Detective Work! 🕵️</strong>
+    <p>You observed the exact runtime bug that plagues junior engineers in asynchronous architectures:</p>
+    <blockquote>
+      <em>"First it kept on running because the order was still marked as pending so I added a processor that marks it as running. But this would probably have issues when the processes fails or something right?"</em>
+    </blockquote>
+    <p>You diagnosed the root cause <strong>and</strong> correctly suspected the race/failure flaws of putting state mutation into a parallel processor! Let's explore the battle-tested senior solution.</p>
+  </div>
+
+  <h2>1. Why the Infinite Loop Happened</h2>
+  <p>Every 500 milliseconds, <code>OutboxDispatcher</code> runs:</p>
+  <pre><code>pendingOrders, _ := d.orderStore.GetPendingOrders(ctx) // SELECT WHERE status = 'PENDING'
+for _, order := range pendingOrders {
+    d.queue.Submit(ctx, order)
+}</code></pre>
+  <p>Because submitting an order to an in-memory queue channel does not alter SQLite, 500ms later <code>GetPendingOrders</code> queries SQLite again, sees the exact same order still marked <code>PENDING</code>, and submits it again! This repeats infinitely.</p>
+
+  <h2>2. Why <code>OrderMarker</code> in <code>Parallel</code> Has Flaws</h2>
+  <p>You created <code>OrderMarker</code> and wired it into <code>processor.NewParallel(p1, p2, p3)</code>. Why is this dangerous in production?</p>
+
+  <h3>A. Concurrent Database Write Race</h3>
+  <p><code>Parallel</code> uses <code>errgroup</code> to execute steps simultaneously on separate CPU threads. <code>OrderMarker</code> and <code>OrderPlacing</code> will both execute <code>UPDATE orders</code> on the exact same row in SQLite at the exact same millisecond, fighting for database locks and overwriting each other!</p>
+
+  <h3>B. Sibling Failure Orphans the State</h3>
+  <p>If <code>OrderPlacing</code> fails (e.g. out of stock), but <code>OrderMarker</code> succeeded, what is the order's status? If the rollback fails or doesn't execute cleanly, the database row stays stuck in <code>RUNNING</code> forever.</p>
+
+  <h3>C. Architectural Separation of Concerns</h3>
+  <p>A <strong>Pipeline Step</strong> represents business domain actions (e.g. reserve inventory, charge stripe).<br>
+  A <strong>Lifecycle State Transition</strong> represents the orchestrator's contract (e.g. <code>PENDING &rarr; RUNNING &rarr; COMPLETED</code>). They belong at different layers!</p>
+
+  <h2>3. The Industry Standard: The 3-Step Lifecycle</h2>
+
+  <h3>Step 1: Claim at Dispatch (in <code>OutboxDispatcher</code>)</h3>
+  <p>Before putting the order into the worker channel, the dispatcher <strong>claims</strong> it by transitioning it in SQLite:</p>
+  <pre><code>func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
+    pendingOrders, err := d.orderStore.GetPendingOrders(ctx)
+    if err != nil {
+        return err
+    }
+
+    for _, order := range pendingOrders {
+        // 1. Claim in SQLite: PENDING -> RUNNING
+        order.Status = domain.OrderStatusRunning
+        if err := d.orderStore.Save(ctx, order); err != nil {
+            return err
+        }
+
+        // 2. Submit to worker channel
+        if err := d.queue.Submit(ctx, order); err != nil {
+            return err
+        }
+    }
+    return nil
+}</code></pre>
+  <p>On the very next tick 500ms later, <code>GetPendingOrders</code> (which queries <code>status = 'PENDING'</code>) will <strong>skip</strong> this order completely. No infinite loop!</p>
+
+  <h3>Step 2: Atomic Success in the Transaction (in <code>OrderPlacing</code>)</h3>
+  <p>When stock deduction succeeds, save the completed order <strong>inside the same database transaction</strong> before calling <code>tx.Commit()</code>:</p>
+  <pre><code>// Inside OrderPlacing.Process:
+order.Status = domain.OrderStatusCompleted
+if err := p.OrderStore.Save(txCtx, order); err != nil {
+    return nil, fmt.Errorf("failed to save completed order: %w", err)
+}
+
+if err := tx.Commit(); err != nil {
+    return nil, fmt.Errorf("failed to commit: %w", err)
+}</code></pre>
+  <p>Stock deduction and order completion succeed or fail together as a single atomic unit.</p>
+
+  <h3>Step 3: Clean Rollback on Failure</h3>
+  <p>If the payment fails or stock is exhausted, the rollback function marks the order as <code>FAILED</code> and saves it to SQLite:</p>
+  <pre><code>return func() error {
+    _ = p.InventoryStore.ReleaseStock(ctx, stock)
+    order.Status = domain.OrderStatusFailed
+    return p.OrderStore.Save(ctx, order)
+}, nil</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Remove <code>OrderMarker</code>:</strong> Delete <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/order_marking.go"><code>internal/processor/order_marking.go</code></a> and remove it from <code>main.go</code>.</li>
+      <li><strong>Implement Claim Check in <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/outbox.go"><code>internal/domain/outbox.go</code></a>:</strong>
+        <ul>
+          <li>In <code>DispatchOnce</code>, set <code>order.Status = domain.OrderStatusRunning</code> and call <code>d.orderStore.Save(ctx, order)</code> before calling <code>d.queue.Submit(ctx, order)</code>.</li>
+        </ul>
+      </li>
+      <li><strong>Save on Success in <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/order_placing.go"><code>internal/processor/order_placing.go</code></a>:</strong>
+        <ul>
+          <li>Call <code>p.OrderStore.Save(txCtx, order)</code> before <code>tx.Commit()</code> so the <code>COMPLETED</code> status is written to SQLite!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+      <li>Restart your server with <code>go run cmd/server/main.go</code>, open <strong><code>http://localhost:8080</code></strong>, submit an order, and watch the entire lifecycle run smoothly with zero infinite loops!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0034-embed-fs-and-single-binary-apps.html">Previous: Lesson 0034</a> | Reference: <a href="../reference/0008-outbox-claim-check-and-state-machines.html">Reference 0008: Outbox Claim Check</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Transactional Outbox Claim Check & State Machine Lifecycle</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Transactional Outbox Claim Check & State Machine Lifecycle</h1>
+  <p><em>The senior architecture pattern for preventing double-dispatch, racing worker writes, and orphaned state transitions.</em></p>
+
+  <div class="callout">
+    <strong>The Core Problem:</strong>
+    <p>If an asynchronous dispatcher queries <code>SELECT * WHERE status = 'PENDING'</code> every 500ms, any order that is submitted to the queue but not yet completed will be re-fetched and re-submitted on the next tick &mdash; causing an <strong>infinite dispatch loop</strong> and duplicate charges!</p>
+  </div>
+
+  <h2>1. The Outbox Claim Check Pattern</h2>
+  <p>The dispatcher must <strong>claim</strong> the job before or immediately upon submitting it to the queue:</p>
+
+  <pre><code>func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
+    pendingOrders, err := d.orderStore.GetPendingOrders(ctx)
+    if err != nil {
+        return err
+    }
+
+    for _, order := range pendingOrders {
+        // 1. Claim the order in the database so next tick ignores it!
+        order.Status = domain.OrderStatusRunning
+        if err := d.orderStore.Save(ctx, order); err != nil {
+            return err
+        }
+
+        // 2. Submit to worker queue
+        if err := d.queue.Submit(ctx, order); err != nil {
+            return err
+        }
+    }
+    return nil
+}</code></pre>
+
+  <h2>2. State Lifecycle Comparison</h2>
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Phase</th>
+        <th style="padding: 8px;">Responsible Component</th>
+        <th style="padding: 8px;">Database State</th>
+        <th style="padding: 8px;">Event Broadcast</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>1. Ingestion</strong></td>
+        <td style="padding: 8px;"><code>HTTP POST /orders</code></td>
+        <td style="padding: 8px;"><code>PENDING</code></td>
+        <td style="padding: 8px;">Created event</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>2. Claim & Dispatch</strong></td>
+        <td style="padding: 8px;"><code>OutboxDispatcher</code></td>
+        <td style="padding: 8px;"><code>RUNNING</code></td>
+        <td style="padding: 8px;">Dispatched event</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>3. Execution (Parallel)</strong></td>
+        <td style="padding: 8px;">Workers / Sagas</td>
+        <td style="padding: 8px;">In-Flight (No state change)</td>
+        <td style="padding: 8px;">None (work in progress)</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><strong>4. Completion / Failure</strong></td>
+        <td style="padding: 8px;">Transactional Commit / Rollback</td>
+        <td style="padding: 8px;"><code>COMPLETED</code> or <code>FAILED</code></td>
+        <td style="padding: 8px;">Final Status event</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Why Lifecycle State Must NOT Be a Parallel Processor Step</h2>
+  <pre><code>// ❌ Dangerous (Write Race):
+p := processor.NewParallel(
+    orderMarker,   // Goroutine 1 writes status = 'RUNNING' to DB
+    orderPlacing,  // Goroutine 2 writes stock & order to DB at the exact same millisecond!
+)
+
+// ✅ Correct (Separation of Concerns):
+// - Dispatcher claims the order: PENDING -> RUNNING
+// - Pipeline executes business logic: Deduct stock + Charge card
+// - Processor commits final result: RUNNING -> COMPLETED (or FAILED)</code></pre>
+
+  <div class="footer">
+    <p>Reference 0008 | <a href="0007-go-embed-and-static-file-serving.html">Reference 0007: embed.FS</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

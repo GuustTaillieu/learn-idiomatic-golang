@@ -1,6 +1,9 @@
 package queue
 
-import "uuid"
+import (
+	"encoding/json"
+	"uuid"
+)
 
 type TaskStatus string
 
@@ -39,4 +42,20 @@ func NewTask[T any](item T, opts ...TaskOptionFn[T]) *Task[T] {
 		fn(t)
 	}
 	return t
+}
+
+func (t Task[T]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ID         uuid.UUID  `json:"id"`
+		Item       T          `json:"item"`
+		Status     TaskStatus `json:"status"`
+		Retries    int        `json:"retries"`
+		MaxRetries int        `json:"max_retries"`
+	}{
+		ID:         t.ID,
+		Item:       t.Item,
+		Status:     t.Status,
+		Retries:    t.Retries,
+		MaxRetries: t.MaxRetries,
+	})
 }

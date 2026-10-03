@@ -17,7 +17,7 @@ type Item struct {
 	CreatedAt time.Time
 }
 
-type ItemStore interface {
+type ItemStorer interface {
 	Save(ctx context.Context, item *Item) error
 	Get(ctx context.Context, id ItemID) (*Item, error)
 }

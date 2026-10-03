@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0036: Streaming Teardown & http.Server.BaseContext</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0036: Streaming Teardown & http.Server.BaseContext</h1>
+  <p><em>Target: Eliminate the <code>context deadline exceeded</code> error on shutdown, understand how Go manages HTTP request context lifecycles, and achieve instant sub-10ms graceful termination.</em></p>
+
+  <div class="callout">
+    <strong>The Bug You Encountered:</strong>
+    <pre><code>^C2026/10/02 18:11:09 INFO Shutting down server...
+2026/10/02 18:11:14 ERROR Failed to shutdown server error="context deadline exceeded"</code></pre>
+    <p>Notice the exact 5-second gap: <code>18:11:09</code> to <code>18:11:14</code>. That matches your <code>context.WithTimeout(..., 5*time.Second)</code>! Why did it wait the full 5 seconds?</p>
+  </div>
+
+  <h2>1. The Root Cause: Why <code>srv.Shutdown()</code> Hung</h2>
+  <p>According to the official Go standard library documentation for <code>http.Server.Shutdown(ctx)</code>:</p>
+  <blockquote>
+    <em>"Shutdown works by first closing all open listeners, then closing all idle connections, and then <strong>waiting indefinitely for connections to return to idle</strong> and then shut down."</em>
+  </blockquote>
+  <p><strong>Crucial detail:</strong> <code>http.Server.Shutdown()</code> does <strong>NOT</strong> cancel the <code>r.Context()</code> of in-flight active HTTP requests! It politely waits for handlers to return on their own.</p>
+  <p>Now look at your <code>GET /events</code> SSE handler:</p>
+  <pre><code>for {
+    select {
+    case <-r.Context().Done():
+        return
+    case event := <-subscriber:
+        ...
+    }
+}</code></pre>
+  <p>Because the browser tab is still open, and because <code>srv.Shutdown()</code> does not cancel <code>r.Context()</code>, your SSE handler was happily waiting in an infinite loop! After 5 seconds, the shutdown timeout expired and logged <code>context deadline exceeded</code>.</p>
+
+  <h2>2. The Standard Library Fix: <code>http.Server.BaseContext</code></h2>
+  <p>In Go 1.13, the Go team added a field to <code>http.Server</code> specifically for this: <strong><code>BaseContext</code></strong>.</p>
+  <p><code>BaseContext</code> allows you to specify the parent context for all incoming HTTP requests. If you set it to your top-level <code>signal.NotifyContext</code>:</p>
+
+  <pre><code>import "net"
+
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+defer stop()
+
+srv := &http.Server{
+    Addr:    ":8080",
+    Handler: httpHandler,
+    // 💡 When Ctrl+C is pressed, ctx is cancelled.
+    // This immediately cancels r.Context() inside EVERY active HTTP handler!
+    BaseContext: func(l net.Listener) context.Context {
+        return ctx
+    },
+}</code></pre>
+
+  <h3>What Happens When You Press Ctrl+C:</h3>
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>User hits Ctrl+C &rarr; signal.NotifyContext cancels ctx</code></p>
+    <p>&darr;</p>
+    <p><code>BaseContext propagates cancellation &rarr; r.Context().Done() fires in SSE handler!</code></p>
+    <p>&darr;</p>
+    <p><code>handleGetEvents exits &rarr; defer Unsubscribe runs &rarr; connection closes in 0.2ms!</code></p>
+    <p>&darr;</p>
+    <p><code>srv.Shutdown() completes in 2ms with ZERO errors!</code></p>
+  </div>
+
+  <h2>3. Bonus Safety Net: Forceful Close Fallback</h2>
+  <p>In production, if an unruly HTTP request somehow refuses to exit before the timeout, senior engineers always follow up with <code>srv.Close()</code> to forcefully tear down remaining sockets:</p>
+  <pre><code>if err := srv.Shutdown(shutdownCtx); err != nil {
+    slog.Warn("Graceful shutdown timed out, closing forcefully", "error", err)
+    _ = srv.Close()
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Import <code>"net"</code>.</li>
+          <li>Add <code>BaseContext: func(l net.Listener) context.Context { return ctx }</code> to <code>srv</code>.</li>
+        </ul>
+      </li>
+      <li>Verify all tests pass:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+      <li>Run the server:
+        <pre><code>go run cmd/server/main.go</code></pre>
+      </li>
+      <li>Open <code>http://localhost:8080</code> in your browser (keep the tab open so SSE is active!).</li>
+      <li>In your terminal, hit <strong><code>Ctrl+C</code></strong>!
+        <p>Watch it shut down <strong>instantly</strong> in milliseconds with clean output:</p>
+        <pre><code>^C2026/10/02 18:15:00 INFO Shutting down server...
+(exits cleanly with 0 errors!)</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0035-outbox-claim-check-and-state-machine-lifecycle.html">Previous: Lesson 0035</a> | Reference: <a href="../reference/0009-graceful-shutdown-and-base-context.html">Reference 0009: Graceful Shutdown & BaseContext</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

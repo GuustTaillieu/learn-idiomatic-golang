@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/event"
 	"github.com/GuustTaillieu/idiomatic-go/internal/health"
 	httpapi "github.com/GuustTaillieu/idiomatic-go/internal/http"
 	"github.com/GuustTaillieu/idiomatic-go/internal/http/middleware"
@@ -44,8 +46,9 @@ func main() {
 	}
 	p1 := processor.NewOrderPlacing(db, inventoryStore, orderStore)
 	p2 := processor.NewPaying[*domain.Order]()
-	p := processor.NewPipeline(p1, p2)
-	queue := queue.New(p, 100)
+	p := processor.NewParallel(p1, p2)
+	orderHub := event.NewHub[queue.Task[*domain.Order]]()
+	queue := queue.New(p, 100, queue.WithTaskBroadcaster(orderHub))
 	dispatcher := domain.NewOutboxDispatcher(orderStore, queue)
 
 	healthChecker := health.NewMultiChecker(health.NewDatabaseChecker(db), queue)
@@ -60,12 +63,21 @@ func main() {
 		}
 	}()
 
+	// Setup rate limiter
+	rateLimiter, cleanup := middleware.NewIPRateLimiter(1*time.Minute, 1, 5)
+	defer cleanup()
+
 	// Start HTTP server
-	httpHandler := httpapi.NewHandler(orderStore, healthChecker).Routes()
+	httpHandler := httpapi.NewHandler(orderStore, healthChecker, orderHub).Routes()
+	httpHandler = middleware.RateLimitMiddleware(rateLimiter)(httpHandler)
 	httpHandler = middleware.RequestIDMiddleware(httpHandler)
+	httpHandler = middleware.LoggingMiddleware(httpHandler)
 	srv := &http.Server{
 		Addr:    ":8080",
 		Handler: httpHandler,
+		BaseContext: func(l net.Listener) context.Context {
+			return ctx
+		},
 	}
 
 	go func() {
@@ -80,7 +92,8 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // 5 seconds
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("Failed to shutdown server", "error", err)
+			slog.Warn("Graceful shutdown timed out, closing forcefully", "error", err)
+			_ = srv.Close()
 		}
 		queue.Stop()
 	}

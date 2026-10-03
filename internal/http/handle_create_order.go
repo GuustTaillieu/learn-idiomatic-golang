@@ -20,7 +20,7 @@ func (h *Handler) handleCreateorder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	order := domain.NewOrder(req.ItemID, req.Amount)
-	if err := h.store.Save(r.Context(), order); err != nil {
+	if err := h.orderStore.Save(r.Context(), order); err != nil {
 		http.Error(w, "Failed to save order", http.StatusInternalServerError)
 		return
 	}

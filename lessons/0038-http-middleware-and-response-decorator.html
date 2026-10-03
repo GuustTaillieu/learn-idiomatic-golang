@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0038: HTTP Middleware: The ResponseWriter Decorator & Flusher Passthrough</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0038: HTTP Middleware: The ResponseWriter Decorator & Flusher Passthrough</h1>
+  <p><em>Target: Learn how senior Go engineers intercept HTTP responses, capture status codes and byte counts for structured logging, and preserve streaming interfaces like <code>http.Flusher</code>.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Verification:</strong>
+    <ul>
+      <li>🎉 <strong>All 8 Packages Passing with 0 Data Races!</strong> Your context updates and mock signatures are completely aligned across domain, event, http, lib, memory, processor, queue, and sqlite.</li>
+      <li>💡 <strong>Parallel Rollback Context Polish:</strong> In <code>internal/processor/parallel.go</code> (line 42), remember to name your rollback parameter <code>rollbackAll := func(rbCtx context.Context) error</code> and pass <code>rbCtx</code> to <code>rollbackFuncs[i](rbCtx)</code> so the detached context flows all the way through to the child tasks!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Problem: How Do You Log HTTP Status Codes in Go?</h2>
+  <p>In Node.js or Python frameworks, the response object has <code>res.statusCode</code>. But in Go's standard library <code>net/http</code>, <code>http.ResponseWriter</code> is an interface with only three methods:</p>
+  <pre><code>type ResponseWriter interface {
+    Header() Header
+    Write([]byte) (int, error)
+    WriteHeader(statusCode int)
+}</code></pre>
+  <p>There is <strong>no <code>StatusCode()</code> getter</strong>! Once your handler calls <code>w.WriteHeader(http.StatusCreated)</code>, that number is pushed into the HTTP socket and gone forever.</p>
+
+  <h2>2. The Go Solution: Decorating <code>http.ResponseWriter</code></h2>
+  <p>To inspect status codes and measure response payload size in an access-logging middleware, you wrap <code>w</code> in a custom struct that embeds <code>http.ResponseWriter</code>:</p>
+
+  <pre><code>type statusRecorder struct {
+    http.ResponseWriter
+    status int
+    bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+    r.status = code
+    r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+    n, err := r.ResponseWriter.Write(b)
+    r.bytes += n
+    return n, err
+}</code></pre>
+
+  <h2>3. The Streaming Trap: Don't Break <code>http.Flusher</code>!</h2>
+  <p>Here is where intermediate Go developers break production:</p>
+  <p>Remember how your live SSE dashboard calls:</p>
+  <pre><code>flusher, ok := w.(http.Flusher)
+if !ok {
+    http.Error(w, "Streaming unsupported", 500)
+    return
+}</code></pre>
+  <p>If you wrap <code>w</code> with <code>statusRecorder</code>, <code>w.(http.Flusher)</code> will return <strong>false</strong>! Why? Because <code>statusRecorder</code> does not implement <code>Flush()</code>, so your live SSE dashboard will crash with <code>Streaming unsupported</code>!</p>
+  <p><strong>The Senior Fix:</strong> Implement <code>Flush()</code> on your recorder and delegate it to the underlying <code>ResponseWriter</code>:</p>
+  <pre><code>func (r *statusRecorder) Flush() {
+    if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+        flusher.Flush()
+    }
+}</code></pre>
+
+  <h2>4. Building <code>LoggingMiddleware</code></h2>
+  <pre><code>func LoggingMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+        next.ServeHTTP(rec, r)
+
+        lib.Logger(r.Context()).Info("HTTP request",
+            "method", r.Method,
+            "path", r.URL.Path,
+            "status", rec.status,
+            "bytes", rec.bytes,
+            "duration", time.Since(start),
+        )
+    })
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/processor/parallel.go"><code>internal/processor/parallel.go</code></a> (line 42):
+        <ul>
+          <li>Name the parameter: <code>rollbackAll := func(rbCtx context.Context) error</code> and call <code>rollbackFuncs[i](rbCtx)</code> on line 46 so the detached context is passed down.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/middleware/logging.go"><code>internal/http/middleware/logging.go</code></a>:
+        <ul>
+          <li>Define <code>statusRecorder</code> embedding <code>http.ResponseWriter</code>.</li>
+          <li>Implement <code>WriteHeader</code>, <code>Write</code>, and <strong><code>Flush()</code></strong>.</li>
+          <li>Implement <code>LoggingMiddleware(next http.Handler) http.Handler</code> using <code>lib.Logger(r.Context())</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/middleware/logging_test.go"><code>internal/http/middleware/logging_test.go</code></a>:
+        <ul>
+          <li>Verify status and byte count are recorded accurately.</li>
+          <li>Verify that type-asserting <code>http.Flusher</code> on the wrapped response writer succeeds!</li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Chain <code>LoggingMiddleware</code> onto your HTTP handler.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0037-the-ghost-rollback-trap-and-context-without-cancel.html">Previous: Lesson 0037</a> | Reference: <a href="../reference/0011-http-middleware-and-response-decorator.html">Reference 0011: HTTP Middleware & Decorators</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

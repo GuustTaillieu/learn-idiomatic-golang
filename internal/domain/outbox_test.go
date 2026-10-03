@@ -43,6 +43,6 @@ func TestOutboxDispatcher_DispatchesPendingOrders(t *testing.T) {
 // A simple test processor that immediately completes without delay
 type fastProcessor struct{}
 
-func (f *fastProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (f *fastProcessor) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
 	return nil, nil
 }

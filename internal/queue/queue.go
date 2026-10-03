@@ -17,11 +17,12 @@ type GenericQueue[T any] struct {
 	tasks chan *Task[T]
 	mu    sync.RWMutex
 
-	processor domain.Processor[T]
-	baseDelay time.Duration
-	closed    bool
-	wg        sync.WaitGroup
-	stopChan  chan struct{}
+	taskBroadcaster domain.Broadcaster[Task[T]]
+	processor       domain.Processor[T]
+	baseDelay       time.Duration
+	closed          bool
+	wg              sync.WaitGroup
+	stopChan        chan struct{}
 }
 
 type QueueOptionFn[T any] func(*GenericQueue[T])
@@ -32,12 +33,19 @@ func WithQueueBaseDelay[T any](baseDelay time.Duration) QueueOptionFn[T] {
 	}
 }
 
+func WithTaskBroadcaster[T any](hub domain.Broadcaster[Task[T]]) QueueOptionFn[T] {
+	return func(q *GenericQueue[T]) {
+		q.taskBroadcaster = hub
+	}
+}
+
 func New[T any](processor domain.Processor[T], bufferSize int, opts ...QueueOptionFn[T]) *GenericQueue[T] {
 	q := &GenericQueue[T]{
-		processor: processor,
-		baseDelay: time.Second,
-		tasks:     make(chan *Task[T], bufferSize),
-		stopChan:  make(chan struct{}),
+		processor:       processor,
+		baseDelay:       time.Second,
+		tasks:           make(chan *Task[T], bufferSize),
+		stopChan:        make(chan struct{}),
+		taskBroadcaster: &taskPrinter[Task[T]]{},
 	}
 
 	for _, opt := range opts {
@@ -99,17 +107,20 @@ func (q *GenericQueue[T]) worker(ctx context.Context) {
 			if !ok {
 				return
 			}
-			lib.ContextWithLogger(ctx, slog.With("task", task.ID))
-			lib.Logger(ctx).Info("Processing", "item", task.Item)
+			ctx = lib.ContextWithLogger(ctx, slog.With("task", task.ID))
+			lib.Logger(ctx).Info("Processing")
 			task.Status = TaskStatusProcessing
+			q.taskBroadcaster.Broadcast(*task)
 
 			err := q.tryProcess(ctx, task)
 			if err != nil {
 				lib.Logger(ctx).Error("processing failed", "error", err)
 				task.Status = TaskStatusFailed
-				return
+			} else {
+				task.Status = TaskStatusCompleted
 			}
-			task.Status = TaskStatusCompleted
+
+			q.taskBroadcaster.Broadcast(*task)
 		}
 	}
 }
@@ -119,6 +130,10 @@ func (q *GenericQueue[T]) tryProcess(ctx context.Context, task *Task[T]) error {
 		cleanup, err := q.processor.Process(ctx, task.Item)
 		if err == nil {
 			return nil
+		}
+		lib.Logger(ctx).Info("Attempting to cleanup after processing error")
+		if err := executeRollback(ctx, cleanup); err != nil {
+			return fmt.Errorf("cleanup failed after processing error: %w", err)
 		}
 
 		// There was an error during processing, check if it's retryable
@@ -131,7 +146,9 @@ func (q *GenericQueue[T]) tryProcess(ctx context.Context, task *Task[T]) error {
 				case <-ctx.Done():
 					return fmt.Errorf("processing canceled: %w", ctx.Err())
 				case <-time.After(backoff):
-					continue // Retry processing
+					task.Status = TaskStatusProcessing
+					q.taskBroadcaster.Broadcast(*task) // Broadcast the updated task with incremented retries
+					continue                           // Retry processing
 				}
 			} else {
 				lib.Logger(ctx).Error("Max retries reached for task")
@@ -141,12 +158,6 @@ func (q *GenericQueue[T]) tryProcess(ctx context.Context, task *Task[T]) error {
 
 		// The process was not retryable
 		lib.Logger(ctx).Error("Processing failed with non-retryable error", "error", err)
-		if cleanup != nil {
-			lib.Logger(ctx).Info("Attempting to cleanup after processing error")
-			if err := cleanup(); err != nil {
-				return fmt.Errorf("cleanup failed after processing error: %w", err)
-			}
-		}
 		return err
 	}
 }
@@ -160,4 +171,23 @@ func (q *GenericQueue[T]) Ping(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func executeRollback(ctx context.Context, rollback func(context.Context) error) error {
+	if rollback == nil {
+		return nil
+	}
+
+	detachedCtx := context.WithoutCancel(ctx)
+	rollbackCtx, cancel := context.WithTimeout(detachedCtx, 3*time.Second)
+	defer cancel()
+
+	return rollback(rollbackCtx)
+}
+
+type taskPrinter[T any] struct{}
+
+func (tp *taskPrinter[T]) Broadcast(task T) {
+	log := lib.Logger(context.Background()).With("task", task)
+	log.Info("Task event broadcasted")
 }

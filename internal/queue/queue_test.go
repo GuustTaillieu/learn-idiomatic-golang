@@ -41,7 +41,7 @@ func NewIntegerProcessor() *integerProcessor[int] {
 	return &integerProcessor[int]{}
 }
 
-func (p *integerProcessor[T]) Process(ctx context.Context, item int) (func() error, error) {
+func (p *integerProcessor[T]) Process(ctx context.Context, item int) (func(context.Context) error, error) {
 	// Simulate processing by summing the integers
 	p.mu.Lock()
 	defer p.mu.Unlock()

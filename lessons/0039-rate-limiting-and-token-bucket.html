@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0039: Rate Limiting, Backpressure & the Token Bucket Pattern</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0039: Rate Limiting, Backpressure & the Token Bucket Pattern</h1>
+  <p><em>Target: Shield your service against cascading failures, implement the Token Bucket algorithm with <code>golang.org/x/time/rate</code>, and build a leak-free per-client rate limiting middleware.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Middleware Architecture:</strong>
+    <ul>
+      <li>🎉 <strong>Clean Chaining:</strong> In <code>cmd/server/main.go</code>, you chained <code>RequestIDMiddleware</code> followed by <code>LoggingMiddleware</code>. Context values and correlation IDs flow seamlessly into every structured log line!</li>
+      <li>✨ <strong>Preserved Streaming:</strong> Your <code>ResponseRecorder</code> in <code>internal/http/recorder.go</code> cleanly delegates <code>Flush()</code>, so your live SSE dashboard continues streaming flawlessly!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Problem: What Happens Under Unbounded Load?</h2>
+  <p>Imagine your order service experiences a sudden spike: 10,000 requests hit <code>POST /orders</code> in 2 seconds.</p>
+  <p>Without backpressure:</p>
+  <ol>
+    <li>10,000 HTTP goroutines spawn, exhausting RAM.</li>
+    <li>SQLite database connections saturate, throwing <code>database is locked</code>.</li>
+    <li>Response times degrade from 10ms to 30 seconds.</li>
+    <li>Your health checks (<code>/readyz</code>) time out, causing Kubernetes / orchestrators to kill and restart your server.</li>
+  </ol>
+  <p><strong>The Senior Law of Backpressure:</strong> It is far better to reject excess traffic immediately with <strong>HTTP 429 Too Many Requests</strong> than to let your entire infrastructure crash.</p>
+
+  <h2>2. The Token Bucket Algorithm</h2>
+  <p>The Go standard extended library provides <strong><code>golang.org/x/time/rate</code></strong>:</p>
+  <ul>
+    <li><strong>Capacity (Burst):</strong> The maximum number of requests allowed in a sudden burst (e.g. 5 requests).</li>
+    <li><strong>Fill Rate:</strong> How many tokens are added back to the bucket each second (e.g. 2 tokens/sec).</li>
+  </ul>
+
+  <pre><code>import "golang.org/x/time/rate"
+
+// Fill rate: 2 tokens/sec, Bucket size: 5 tokens
+limiter := rate.NewLimiter(rate.Limit(2), 5)
+
+if !limiter.Allow() {
+    // 429 Too Many Requests!
+}</code></pre>
+
+  <h2>3. The Memory Leak Trap in Per-IP Rate Limiting</h2>
+  <p>In production, you want to limit each IP address separately. A common junior mistake:</p>
+  <pre><code>var limiters = make(map[string]*rate.Limiter) // ⚠️ DANGER: Infinite memory leak!</code></pre>
+  <p>Over a few days, 500,000 unique IP addresses visit your site. The map grows forever and eventually triggers an Out-Of-Memory (OOM) crash!</p>
+  <p><strong>The Senior Fix:</strong> Store a <code>lastSeen time.Time</code> for each client, and run a background ticker to periodically prune clients that haven't been seen in the last 5 minutes.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/middleware/rate_limit.go"><code>internal/http/middleware/rate_limit.go</code></a>:
+        <ul>
+          <li>Define <code>type IPRateLimiter struct { ... }</code> managing a map of client IP to <code>rate.Limiter</code> and <code>lastSeen</code> timestamp.</li>
+          <li>Implement a background cleanup goroutine on a <code>time.Ticker</code> to prune stale entries.</li>
+          <li>Implement <code>RateLimitMiddleware(limiter *IPRateLimiter) func(http.Handler) http.Handler</code> that returns <code>HTTP 429 Too Many Requests</code> with a <code>Retry-After: 1</code> header if <code>limiter.Allow()</code> returns false.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/middleware/rate_limit_test.go"><code>internal/http/middleware/rate_limit_test.go</code></a>:
+        <ul>
+          <li>Verify that sending requests up to the burst limit succeeds (200 OK).</li>
+          <li>Verify that exceeding the burst limit returns <code>429 Too Many Requests</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Initialize <code>rateLimiter := middleware.NewIPRateLimiter(rate.Limit(5), 10)</code>.</li>
+          <li>Chain it into your HTTP middleware stack.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0038-http-middleware-and-response-decorator.html">Previous: Lesson 0038</a> | Reference: <a href="../reference/0012-rate-limiting-and-token-bucket.html">Reference 0012: Rate Limiting</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

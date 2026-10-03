@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0032: Senior Performance Engineering: Benchmarking & sync.Pool</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0032: Senior Performance Engineering: Benchmarking & sync.Pool</h1>
+  <p><em>Target: Enter the realm of senior Go engineering: measure CPU/memory efficiency using <code>testing.B</code>, inspect compiler escape analysis, and achieve 0 allocs/op with <code>sync.Pool</code>.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Achieved:</strong>
+    <ul>
+      <li>🎉 <strong>100% Green Across All 7 Packages!</strong> Domain, HTTP, Lib, Memory, Processor, Queue, and SQLite all compile and pass with <strong>0 data races</strong> under <code>go test -race</code>!</li>
+      <li>✨ <strong>Clean Architecture:</strong> The Standard Package Layout is firmly in place. Your codebase is clean, decoupled, and extensible.</li>
+    </ul>
+  </div>
+
+  <h2>1. What Separates Senior Go Engineers: Mechanical Sympathy</h2>
+  <p>In many languages, performance is an afterthought or left to JIT compilers. In Go, senior engineers write code with <strong>mechanical sympathy</strong>: understanding how the Go runtime, heap allocator, and CPU caches interact.</p>
+
+  <h3>The Silent Killer: Garbage Collector (GC) Pressure</h3>
+  <p>Every time you allocate memory on the heap (e.g. creating slices, closures, or new buffers with <code>&bytes.Buffer{}</code>):</p>
+  <ol>
+    <li>The runtime must find free memory blocks.</li>
+    <li>When heap size reaches a threshold, the Go GC triggers a concurrent sweep.</li>
+    <li>Under heavy production traffic (10,000 req/sec), thousands of allocations cause CPU spikes and latency jitter (p99 tail latency).</li>
+  </ol>
+
+  <h2>2. Measuring Reality: <code>testing.B</code> & <code>-benchmem</code></h2>
+  <p>Go has benchmarking built right into the standard <code>testing</code> package. Senior engineers never guess; they measure:</p>
+
+  <pre><code>func BenchmarkOrderSerialization(b *testing.B) {
+    order := domain.NewOrder(domain.ItemID(uuid.New()), 10)
+
+    b.ResetTimer()
+    b.ReportAllocs() // 💡 Tracks exact bytes and allocation count!
+
+    for b.Loop() { // Go 1.24+ idiomatic loop (or for i := 0; i < b.N; i++)
+        _ = serializeOrder(order)
+    }
+}</code></pre>
+
+  <p>Run your benchmarks from the terminal:</p>
+  <pre><code>go test -bench=BenchmarkOrderSerialization -benchmem ./...</code></pre>
+
+  <p>You will see output like:</p>
+  <pre><code>BenchmarkOrderSerialization-8    2000000    612.4 ns/op    512 B/op    4 allocs/op</code></pre>
+
+  <h2>3. Escape Analysis: Stack vs. Heap</h2>
+  <p>How do you know <em>why</em> a variable is being allocated on the heap? Ask the compiler!</p>
+  <pre><code>go build -gcflags="-m" ./internal/domain/...</code></pre>
+  <p>The compiler will tell you:</p>
+  <ul>
+    <li><code>"... escapes to heap"</code> &rarr; Allocated on heap (slow, GC overhead).</li>
+    <li><code>"... does not escape"</code> &rarr; Allocated on CPU stack (virtually instant, zero GC).</li>
+  </ul>
+
+  <h2>4. The Secret Weapon: <code>sync.Pool</code> for Zero-Allocation Hot Paths</h2>
+  <p>When you need temporary buffers or objects repeatedly in worker pools or HTTP handlers, instead of creating a new one on every request, you <strong>recycle</strong> them using <code>sync.Pool</code>:</p>
+
+  <pre><code>var bufPool = sync.Pool{
+    New: func() any {
+        return new(bytes.Buffer)
+    },
+}
+
+func FastSerialize(order *domain.Order) []byte {
+    // 1. Borrow from pool (no heap allocation if pool has available buffers!)
+    buf := bufPool.Get().(*bytes.Buffer)
+    // 2. CRITICAL: Reset before use, so previous data doesn't leak!
+    buf.Reset()
+    // 3. Put back when done
+    defer bufPool.Put(buf)
+
+    // Write data into buf...
+    return buf.Bytes()
+}</code></pre>
+
+  <p><strong>Result:</strong> 4 allocations and 512 B/op drop to <strong>0 B/op and 0 allocs/op</strong>!</p>
+
+  <div class="challenge">
+    <h3>Your Senior Hands-On Challenge</h3>
+    <ol>
+      <li>Create a new file <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/buffer_pool.go"><code>internal/lib/buffer_pool.go</code></a>:
+        <ul>
+          <li>Define a thread-safe <code>BufferPool</code> wrapping <code>sync.Pool</code>.</li>
+          <li>Provide <code>Get() *bytes.Buffer</code> (which resets the buffer) and <code>Put(buf *bytes.Buffer)</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/lib/buffer_pool_test.go"><code>internal/lib/buffer_pool_test.go</code></a>:
+        <ul>
+          <li>Write <code>BenchmarkUnpooledBuffer(b *testing.B)</code> that creates a new <code>new(bytes.Buffer)</code> on each iteration.</li>
+          <li>Write <code>BenchmarkPooledBuffer(b *testing.B)</code> that borrows from your <code>BufferPool</code>.</li>
+          <li>Call <code>b.ReportAllocs()</code> in both.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -bench=Benchmark -benchmem ./internal/lib/...</code></pre>
+        Compare the <code>allocs/op</code> and <code>B/op</code> between unpooled and pooled!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0031-the-json-quote-trap-and-text-marshaler.html">Previous: Lesson 0031</a> | Reference: <a href="../reference/0005-benchmarking-and-zero-allocation.html">Reference 0005: Benchmarking & Zero-Allocation</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

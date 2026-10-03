@@ -53,7 +53,7 @@ func TestPlaceOrderProcessor_ProcessAndRollback(t *testing.T) {
 	}
 
 	// Act: Rollback the order
-	if err := rollbackFunc(); err != nil {
+	if err := rollbackFunc(context.Background()); err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestPlaceOrderProcessor_Process_ConcurrentOrders(t *testing.T) {
 	}
 }
 
-func getDefaults(t *testing.T) (*sql.DB, domain.ItemStore, domain.InventoryStore, domain.OrderStore) {
+func getDefaults(t *testing.T) (*sql.DB, domain.ItemStorer, domain.InventoryStore, domain.OrderStorer) {
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

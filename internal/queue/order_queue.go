@@ -12,7 +12,7 @@ import (
 
 type orderQueue struct {
 	processor domain.Processor[*domain.Order]
-	store     domain.OrderStore
+	store     domain.OrderStorer
 	orders    chan *domain.Order
 	wg        sync.WaitGroup
 	mu        sync.RWMutex
@@ -29,7 +29,7 @@ func WithBaseDelay(delay time.Duration) OrderQueueOption {
 	}
 }
 
-func NewOrderQueue(processor domain.Processor[*domain.Order], store domain.OrderStore, opts ...OrderQueueOption) *orderQueue {
+func NewOrderQueue(processor domain.Processor[*domain.Order], store domain.OrderStorer, opts ...OrderQueueOption) *orderQueue {
 	q := &orderQueue{
 		processor: processor,
 		store:     store,
@@ -131,6 +131,10 @@ func tryProcess(ctx context.Context, q *orderQueue, order *domain.Order) (domain
 		if err == nil {
 			return domain.OrderStatusCompleted, nil
 		}
+		lib.Logger(ctx).Info("Attempting to cleanup after processing error", "orderID", order.ID)
+		if err := executeRollback(ctx, cleanup); err != nil {
+			return domain.OrderStatusFailed, fmt.Errorf("cleanup failed after processing error: %w", err)
+		}
 
 		// There was an error during processing, check if it's retryable
 		if lib.IsRetryable(err) {
@@ -152,12 +156,6 @@ func tryProcess(ctx context.Context, q *orderQueue, order *domain.Order) (domain
 
 		// The process was not retryable
 		lib.Logger(ctx).Error("Processing failed with non-retryable error", "error", err, "orderID", order.ID)
-		if cleanup != nil {
-			lib.Logger(ctx).Info("Attempting to cleanup after processing error", "orderID", order.ID)
-			if err := cleanup(); err != nil {
-				return domain.OrderStatusFailed, fmt.Errorf("cleanup failed after processing error: %w", err)
-			}
-		}
 		return domain.OrderStatusFailed, err
 	}
 }

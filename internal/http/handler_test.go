@@ -10,14 +10,17 @@ import (
 	"testing"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/event"
 	httpapi "github.com/GuustTaillieu/idiomatic-go/internal/http"
 	"github.com/GuustTaillieu/idiomatic-go/internal/memory"
+	"github.com/GuustTaillieu/idiomatic-go/internal/queue"
 )
 
 func TestHandler_GetOrderRoute(t *testing.T) {
 	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
-	handler := httpapi.NewHandler(s, hc)
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
 
 	// Pre-populate the store with a order
 	item := domain.NewItem("payload")
@@ -51,7 +54,8 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 	// Arrange
 	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
-	handler := httpapi.NewHandler(s, hc)
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
 
 	fakeItem := domain.NewItem("payload")
 	reqBody := fmt.Sprintf(`{"item_id": "%s"}`, fakeItem.ID)
@@ -84,7 +88,8 @@ func TestHandler_Healthz(t *testing.T) {
 	// Arrange
 	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
-	handler := httpapi.NewHandler(s, hc)
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -111,7 +116,8 @@ func TestHandler_Readyz(t *testing.T) {
 	// Arrange
 	s := memory.NewOrderStore()
 	hc := &mockHealthChecker{}
-	handler := httpapi.NewHandler(s, hc)
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
 
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -138,7 +144,8 @@ func TestHandler_Readyz_Unhealthy(t *testing.T) {
 	// Arrange
 	s := memory.NewOrderStore()
 	hc := &mockUnhealthyHealthChecker{}
-	handler := httpapi.NewHandler(s, hc)
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
 
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	rec := httptest.NewRecorder()

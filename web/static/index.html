@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GopherOrder: Concurrent Order Processing Engine</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card-bg: #161922;
+      --border: #262b3a;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .brand span {
+      background: var(--accent);
+      color: white;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.8rem;
+      border-radius: 9999px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+    }
+
+    .dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+
+    .card h2 {
+      font-size: 1.1rem;
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    input {
+      width: 100%;
+      padding: 0.65rem 0.85rem;
+      background: #0b0c10;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    button {
+      width: 100%;
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:hover {
+      background: var(--accent-hover);
+    }
+
+    .orders-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 600px;
+      overflow-y: auto;
+    }
+
+    .order-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0d0f15;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1.1rem;
+      transition: all 0.2s ease;
+    }
+
+    .order-info h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      font-family: monospace;
+      color: var(--text);
+    }
+
+    .order-info p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.25rem 0.65rem;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+
+    .badge-PENDING {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-PROCESSING {
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .badge-COMPLETED {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-FAILED {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div class="brand">
+      <h1>GopherOrder</h1>
+      <span>LIVE PIPELINE</span>
+    </div>
+    <div class="status-badge">
+      <div id="statusDot" class="dot"></div>
+      <span id="statusText">Connecting SSE...</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- Place Order Form -->
+    <div class="card">
+      <h2>Submit New Order</h2>
+      <form id="orderForm">
+        <div class="form-group">
+          <label for="itemId">Item UUID</label>
+          <input type="text" id="itemId" required value="4a32ec48-7090-482a-a9a3-5cbb73b7e4f1">
+        </div>
+        <div class="form-group">
+          <label for="quantity">Quantity</label>
+          <input type="number" id="quantity" required min="1" value="2">
+        </div>
+        <button type="submit" id="submitBtn">⚡ Dispatch to Outbox</button>
+      </form>
+    </div>
+
+    <!-- Live Event Feed -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>Live Worker Queue Events</h2>
+        <span id="orderCount" style="font-size: 0.85rem; color: var(--text-muted);">0 tasks</span>
+      </div>
+      <div class="orders-feed" id="ordersFeed">
+        <p id="emptyPrompt" style="color: var(--text-muted); font-size: 0.9rem; text-align: center; padding: 2rem;">
+          Listening on <code>/events</code>... Submit an order to watch the live worker pool in action!
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const ordersFeed = document.getElementById('ordersFeed');
+    const emptyPrompt = document.getElementById('emptyPrompt');
+    const orderCount = document.getElementById('orderCount');
+    const orderForm = document.getElementById('orderForm');
+
+    const tasksMap = new Map();
+
+    // 1. Connect to Go's Server-Sent Events (SSE) Stream
+    const eventSource = new EventSource('/events');
+
+    eventSource.onopen = () => {
+      statusDot.classList.add('connected');
+      statusText.textContent = 'Live SSE Connected';
+    };
+
+    eventSource.onerror = (err) => {
+      statusDot.classList.remove('connected');
+      statusText.textContent = 'Reconnecting...';
+    };
+
+    eventSource.onmessage = (e) => {
+      try {
+        const task = JSON.parse(e.data);
+        renderTask(task);
+      } catch (err) {
+        console.error("Failed to parse SSE event:", err);
+      }
+    };
+
+    function renderTask(task) {
+      if (emptyPrompt) emptyPrompt.style.display = 'none';
+
+      tasksMap.set(task.id, task);
+      orderCount.textContent = `${tasksMap.size} tasks tracked`;
+
+      let elem = document.getElementById(`task-${task.id}`);
+      if (!elem) {
+        elem = document.createElement('div');
+        elem.id = `task-${task.id}`;
+        elem.className = 'order-item';
+        ordersFeed.prepend(elem);
+      }
+
+      const itemInfo = task.item ? (task.item.ID || task.item.id || 'Order') : 'Item';
+
+      elem.innerHTML = `
+        <div class="order-info">
+          <h3>Task: ${task.id.slice(0, 8)}...</h3>
+          <p>Order: ${itemInfo} • Retries: ${task.retries}/${task.max_retries}</p>
+        </div>
+        <span class="badge badge-${task.status}">${task.status}</span>
+      `;
+    }
+
+    // 2. Submit Order to Go API
+    orderForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const itemId = document.getElementById('itemId').value;
+      const amount = parseInt(document.getElementById('quantity').value, 1);
+      const submitBtn = document.getElementById('submitBtn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+
+      try {
+        const res = await fetch('/orders', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({item_id: itemId, amount: amount})
+        });
+
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        const data = await res.json();
+        console.log("Order created:", data);
+      } catch (err) {
+        alert("Failed to submit order: " + err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '⚡ Dispatch to Outbox';
+      }
+    });
+  </script>
+</body>
+
+</html>

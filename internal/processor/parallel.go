@@ -19,9 +19,9 @@ func NewParallel[T any](processors ...domain.Processor[T]) *Parallel[T] {
 	}
 }
 
-func (p *Parallel[T]) Process(ctx context.Context, item T) (func() error, error) {
+func (p *Parallel[T]) Process(ctx context.Context, item T) (func(context.Context) error, error) {
 	g, gCtx := errgroup.WithContext(ctx)
-	rollbackFuncs := make([]func() error, len(p.processors))
+	rollbackFuncs := make([]func(context.Context) error, len(p.processors))
 	mu := sync.Mutex{}
 
 	for i, processor := range p.processors {
@@ -34,15 +34,16 @@ func (p *Parallel[T]) Process(ctx context.Context, item T) (func() error, error)
 			mu.Lock()
 			rollbackFuncs[i] = rollbackFunc
 			mu.Unlock()
+
 			return nil
 		})
 	}
 
-	rollbackAll := func() error {
+	rollbackAll := func(rbCtx context.Context) error {
 		rollbackErrs := make([]error, 0, len(rollbackFuncs))
 		for i := len(rollbackFuncs) - 1; i >= 0; i-- {
 			if rollbackFuncs[i] != nil {
-				if err := rollbackFuncs[i](); err != nil {
+				if err := rollbackFuncs[i](rbCtx); err != nil {
 					rollbackErrs = append(rollbackErrs, err)
 				}
 			}

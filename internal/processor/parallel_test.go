@@ -35,7 +35,7 @@ func TestParallelProcessor_Process(t *testing.T) {
 	if rollbackFunc == nil {
 		t.Fatalf("Expected rollback function to be returned, but got nil")
 	}
-	if err := rollbackFunc(); err != nil {
+	if err := rollbackFunc(context.Background()); err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 }
@@ -62,7 +62,7 @@ func TestParallelProcessor_Process_CancellationOnFailure(t *testing.T) {
 	if rollbackFunc == nil {
 		t.Fatalf("Expected rollback function to be returned, but got nil")
 	}
-	if err := rollbackFunc(); err != nil {
+	if err := rollbackFunc(context.Background()); err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 }
@@ -71,9 +71,9 @@ type mockProcessor struct {
 	timeout time.Duration
 }
 
-func (m *mockProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (m *mockProcessor) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
 	time.Sleep(m.timeout)
-	return func() error {
+	return func(ctx context.Context) error {
 		return nil
 	}, nil
 }
@@ -82,7 +82,7 @@ type failingMockProcessor[T any] struct {
 	timeout time.Duration
 }
 
-func (m *failingMockProcessor[T]) Process(ctx context.Context, item T) (func() error, error) {
+func (m *failingMockProcessor[T]) Process(ctx context.Context, item T) (func(context.Context) error, error) {
 	time.Sleep(m.timeout)
 	return nil, fmt.Errorf("mock processor failed")
 }
@@ -91,10 +91,10 @@ type waitingMockProcessor[T any] struct {
 	timeout time.Duration
 }
 
-func (m *waitingMockProcessor[T]) Process(ctx context.Context, item T) (func() error, error) {
+func (m *waitingMockProcessor[T]) Process(ctx context.Context, item T) (func(context.Context) error, error) {
 	select {
 	case <-time.After(m.timeout):
-		return func() error {
+		return func(context.Context) error {
 			return nil
 		}, nil
 	case <-ctx.Done():

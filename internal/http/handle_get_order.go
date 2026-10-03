@@ -16,7 +16,7 @@ func (h *Handler) handleGetorder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid order ID", http.StatusBadRequest)
 		return
 	}
-	order, err := h.store.Get(r.Context(), domain.OrderID(parsedId))
+	order, err := h.orderStore.Get(r.Context(), domain.OrderID(parsedId))
 	if err != nil {
 		http.Error(w, "order not found", http.StatusNotFound)
 		return

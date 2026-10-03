@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Production Profiling with pprof & Goroutine Leak Hunting</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Production Profiling with pprof & Goroutine Leak Hunting</h1>
+  <p><em>The authoritative guide to inspecting CPU, memory, and goroutines in live production Go services.</em></p>
+
+  <div class="callout">
+    <strong>The Superpower of Go Runtime Diagnostics:</strong>
+    <p>Go has industrial-grade profiling built directly into the runtime. By adding one standard library blank import, your server exposes live endpoints for CPU, heap, goroutine stacks, and mutex contention without third-party agents.</p>
+  </div>
+
+  <h2>1. Enabling pprof in <code>net/http</code></h2>
+  <pre><code>import _ "net/http/pprof"</code></pre>
+  <p>If you use <code>http.DefaultServeMux</code>, routes are automatically registered under <code>/debug/pprof/</code>.</p>
+  <p>If using a custom <code>http.NewServeMux()</code> (Go 1.22+), register them manually or attach a separate internal admin port:</p>
+  <pre><code>// In custom mux:
+mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)</code></pre>
+
+  <h2>2. Essential Terminal Diagnostics Commands</h2>
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Command</th>
+        <th style="padding: 8px;">Diagnosis Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go tool pprof http://localhost:8080/debug/pprof/profile?seconds=30</code></td>
+        <td style="padding: 8px;">Captures 30 seconds of CPU activity to find CPU hotspots.</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go tool pprof http://localhost:8080/debug/pprof/heap</code></td>
+        <td style="padding: 8px;">Analyzes memory heap allocations to find memory leaks.</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>go tool pprof http://localhost:8080/debug/pprof/goroutine</code></td>
+        <td style="padding: 8px;">Inspects all active goroutine stack traces to detect leaked goroutines.</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><code>curl -s http://localhost:8080/debug/pprof/goroutine?debug=1</code></td>
+        <td style="padding: 8px;">Prints a human-readable list of all running goroutines and where they are waiting.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Top Commands Inside Interactive pprof Shell</h2>
+  <ul>
+    <li><code>top10</code>: Shows the top 10 functions consuming CPU or memory.</li>
+    <li><code>top -cum</code>: Shows cumulative consumption (including children called).</li>
+    <li><code>list &lt;FunctionName&gt;</code>: Displays line-by-line source code annotated with exact CPU time or bytes allocated.</li>
+    <li><code>web</code>: Generates an SVG graph / flame graph in your default browser (requires Graphviz).</li>
+  </ul>
+
+  <h2>4. Detecting Goroutine Leaks in Unit Tests</h2>
+  <pre><code>func TestNoGoroutineLeaks(t *testing.T) {
+    initial := runtime.NumGoroutine()
+
+    // Run queue, server, or async operation...
+    runSystem()
+
+    // Wait or assert goroutine count returned to baseline
+    if remaining := runtime.NumGoroutine(); remaining > initial {
+        t.Errorf("Leaked %d goroutines!", remaining - initial)
+    }
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0013 | <a href="0012-rate-limiting-and-token-bucket.html">Reference 0012: Rate Limiting</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

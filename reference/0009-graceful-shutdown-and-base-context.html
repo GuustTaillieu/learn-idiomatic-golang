@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Graceful Shutdown, BaseContext & Streaming Teardown</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Graceful Shutdown, BaseContext & Streaming Teardown</h1>
+  <p><em>How senior Go engineers shut down complex servers with long-lived streaming connections (SSE, WebSockets, gRPC) in under 10ms.</em></p>
+
+  <div class="callout">
+    <strong>The Hidden Pitfall of <code>http.Server.Shutdown()</code>:</strong>
+    <blockquote>
+      <em>"<code>http.Server.Shutdown(ctx)</code> does NOT cancel the request contexts of active connections. It waits for active handlers to return on their own."</em>
+    </blockquote>
+    <p>If you have a streaming endpoint (like SSE <code>GET /events</code>) with an infinite loop, <code>Shutdown()</code> will hang until the shutdown timeout expires with <code>context deadline exceeded</code>.</p>
+  </div>
+
+  <h2>1. The Solution: <code>BaseContext</code></h2>
+  <p>Configure <code>http.Server.BaseContext</code> to inherit from your application's <code>signal.NotifyContext</code>:</p>
+
+  <pre><code>ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+
+srv := &http.Server{
+    Addr:    ":8080",
+    Handler: httpHandler,
+    // 💡 Propagates Ctrl+C cancellation to ALL active HTTP request contexts!
+    BaseContext: func(l net.Listener) context.Context {
+        return ctx
+    },
+}</code></pre>
+
+  <h2>2. What Happens on <code>Ctrl+C</code></h2>
+  <ol>
+    <li>User presses <code>Ctrl+C</code> &rarr; <code>signal.NotifyContext</code> cancels <code>ctx</code>.</li>
+    <li>Because of <code>BaseContext</code>, <code>r.Context().Done()</code> fires immediately inside every active handler.</li>
+    <li>Your SSE loop receives <code>&lt;-r.Context().Done()</code> and exits cleanly in &lt;1ms.</li>
+    <li><code>srv.Shutdown(shutdownCtx)</code> completes instantly with <strong>zero errors</strong>.</li>
+  </ol>
+
+  <h2>3. The Golden Order of Server Teardown</h2>
+  <pre><code>// 1. Stop accepting new web requests & cancel active streams:
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+if err := srv.Shutdown(shutdownCtx); err != nil {
+    slog.Warn("Forcing server close", "error", err)
+    _ = srv.Close()
+}
+
+// 2. Stop the background queue and drain in-flight worker tasks:
+queue.Stop()
+
+// 3. Database connection closes naturally via defer:
+// defer db.Close() runs last!</code></pre>
+
+  <div class="footer">
+    <p>Reference 0009 | <a href="0008-outbox-claim-check-and-state-machines.html">Reference 0008: Outbox Claim Check</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

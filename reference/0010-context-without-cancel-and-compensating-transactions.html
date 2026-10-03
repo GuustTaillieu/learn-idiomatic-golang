@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: context.WithoutCancel & Compensating Transactions</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: context.WithoutCancel & Compensating Transactions</h1>
+  <p><em>The senior pattern for safely executing database cleanups and rollbacks after a request context has timed out or cancelled.</em></p>
+
+  <div class="callout">
+    <strong>The Ghost Rollback Trap:</strong>
+    <p>When an operation fails due to timeout (e.g. <code>context deadline exceeded</code>), passing the original <code>ctx</code> to your rollback closure causes all database queries inside the rollback (like <code>ReleaseStock(ctx)</code>) to immediately fail with <code>context canceled</code>!</p>
+  </div>
+
+  <h2>1. What is <code>context.WithoutCancel</code>? (Go 1.21+)</h2>
+  <p><code>context.WithoutCancel(parent)</code> creates a child context that:</p>
+  <ul>
+    <li>&check; <strong>Ignores parent cancellation:</strong> It stays alive even if the parent times out or cancels.</li>
+    <li>&check; <strong>Preserves values:</strong> It retains all request-scoped metadata (Trace IDs, Loggers, User IDs).</li>
+  </ul>
+
+  <h2>2. The Idiomatic Rollback Execution Pattern</h2>
+  <pre><code>func runRollback(ctx context.Context, cleanup func(context.Context) error) error {
+    if cleanup == nil {
+        return nil
+    }
+
+    // 1. Detach from parent cancellation while preserving context values:
+    detachedCtx := context.WithoutCancel(ctx)
+
+    // 2. Give the rollback its own dedicated, bounded timeout:
+    rollbackCtx, cancel := context.WithTimeout(detachedCtx, 3*time.Second)
+    defer cancel()
+
+    // 3. Execute the compensating transaction safely:
+    return cleanup(rollbackCtx)
+}</code></pre>
+
+  <h2>3. Why Not Just Use <code>context.Background()</code>?</h2>
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Approach</th>
+        <th style="padding: 8px;">Cancellation Signal</th>
+        <th style="padding: 8px;">Context Values (Tracing/Logs)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>cleanup(ctx)</code></td>
+        <td style="padding: 8px;">❌ Fails immediately if parent cancelled</td>
+        <td style="padding: 8px;">&check; Preserved</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><code>cleanup(context.Background())</code></td>
+        <td style="padding: 8px;">&check; Does not cancel</td>
+        <td style="padding: 8px;">❌ Loses all correlation IDs, loggers, trace info</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><code>cleanup(context.WithoutCancel(ctx))</code></td>
+        <td style="padding: 8px;">🏆 <strong>Independent lifecycle</strong></td>
+        <td style="padding: 8px;">🏆 <strong>All trace IDs & loggers preserved</strong></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <p>Reference 0010 | <a href="0009-graceful-shutdown-and-base-context.html">Reference 0009: Graceful Shutdown</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

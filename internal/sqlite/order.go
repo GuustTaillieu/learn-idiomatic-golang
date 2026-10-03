@@ -69,13 +69,13 @@ func (s *OrderStore) Get(ctx context.Context, id domain.OrderID) (*domain.Order,
 }
 
 func (s *OrderStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, error) {
-	// PUT LIMIT TO 50
+	// Query to get pending orders, limited to 50, ordered by created_at ascending
 	query := `
 		SELECT id, item_id, amount, status, created_at
 		FROM orders
 		WHERE status = ?
-		LIMIT 50
-		ORDER BY created_at ASC;`
+		ORDER BY created_at ASC
+		LIMIT 50;`
 	rows, err := s.getDB(ctx).QueryContext(ctx, query, domain.OrderStatusPending)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending orders: %w", err)

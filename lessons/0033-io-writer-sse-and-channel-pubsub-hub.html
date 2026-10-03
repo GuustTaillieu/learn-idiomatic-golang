@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0033: Real-Time Streaming, io.Writer, & Channel Pub-Sub Hub</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0033: Real-Time Streaming, io.Writer, & Channel Pub-Sub Hub</h1>
+  <p><em>Target: Transform your backend from a passive API into an interactive, real-time streaming engine using Go's <code>io.Writer</code>, <code>http.Flusher</code>, and the Channel Pub-Sub Hub pattern.</em></p>
+
+  <div class="callout">
+    <strong>Milestone Review: Your Benchmark Results 🚀</strong>
+    <pre><code>BenchmarkUnpooledBuffer-16    42,572,694    26.26 ns/op    64 B/op    1 allocs/op
+BenchmarkPooledBuffer-16      73,700,715    15.24 ns/op     0 B/op    0 allocs/op</code></pre>
+    <p>Look at that: <strong>Almost 2x faster, 73 million operations, and exactly 0 B/op and 0 allocs/op!</strong> You have successfully written your first zero-allocation production optimization in Go.</p>
+  </div>
+
+  <h2>1. Connecting to Frontends: gRPC vs. WebSockets vs. SSE</h2>
+  <p>You asked an essential architectural question: <em>"What is the best way to connect a Go backend to a frontend? What about gRPC?"</em></p>
+
+  <table style="width: 100%; border-collapse: collapse; margin: 1.5rem 0;">
+    <thead>
+      <tr style="border-bottom: 2px solid var(--border-color); text-align: left;">
+        <th style="padding: 8px;">Technology</th>
+        <th style="padding: 8px;">How It Works</th>
+        <th style="padding: 8px;">Best Production Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>gRPC</strong></td>
+        <td style="padding: 8px;">Protobuf over HTTP/2. Strict RPC contracts.</td>
+        <td style="padding: 8px;">
+          ✅ <strong>Backend-to-Backend</strong> microservices.<br>
+          ❌ Clunky for web browsers (requires Envoy proxy + <code>grpc-web</code> JS runtime).
+        </td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 8px;"><strong>WebSockets</strong></td>
+        <td style="padding: 8px;">Full-duplex (2-way) TCP socket over HTTP upgrade.</td>
+        <td style="padding: 8px;">
+          ✅ 2-way real-time apps: multiplayer gaming, collaborative whiteboards, live chat.<br>
+          ⚠️ Requires custom heartbeat ping-pongs and reconnect logic.
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 8px;"><strong>Server-Sent Events (SSE)</strong></td>
+        <td style="padding: 8px;">Standard HTTP streaming. Unidirectional (Server &rarr; Client).</td>
+        <td style="padding: 8px;">
+          🏆 <strong>The industry standard in Go</strong> for order tracking, live metrics, and AI token streaming (ChatGPT, Claude).<br>
+          ✅ Built into browsers with native <code>new EventSource('/api/events')</code>.<br>
+          ✅ Works over plain HTTP/1.1 and HTTP/2 without extra proxies!
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. The Core of Go: <code>io.Writer</code> and <code>http.Flusher</code></h2>
+  <p>In Go, everything that outputs bytes implements the <code>io.Writer</code> interface:</p>
+  <pre><code>type Writer interface {
+    Write(p []byte) (n int, err error)
+}</code></pre>
+
+  <p>Your HTTP response handler receives <code>w http.ResponseWriter</code>. Behind the scenes, <code>w</code> is an <code>io.Writer</code>! When you write data to <code>w</code>, the Go HTTP server buffers it in memory to send a single efficient TCP packet.</p>
+  <p><strong>The Streaming Dilemma:</strong> In real-time streaming, you cannot wait for the buffer to fill up! You must push the data across the internet immediately. That is where <strong><code>http.Flusher</code></strong> comes in:</p>
+
+  <pre><code>flusher, ok := w.(http.Flusher)
+if !ok {
+    http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+    return
+}
+
+// 1. Write the SSE formatted message:
+fmt.Fprintf(w, "data: %s\n\n", jsonPayload)
+
+// 2. Force Go to push the packet over the wire immediately!
+flusher.Flush()</code></pre>
+
+  <h2>3. Advanced Channel Pattern: The Pub-Sub Event Hub</h2>
+  <p>When an order transitions from <code>PENDING &rarr; PROCESSING &rarr; COMPLETED</code> inside your worker queue, how do multiple connected browser tabs receive the notification?</p>
+
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><strong>Worker Queue:</strong> <code>hub.Broadcast(OrderEvent{ID, Status})</code></p>
+    <p>&darr;</p>
+    <p><strong>Event Hub:</strong> Iterates over connected client channels</p>
+    <p>&darr;</p>
+    <p><code>Client A Channel &rarr; HTTP Goroutine A &rarr; SSE &rarr; Browser Tab 1</code></p>
+    <p><code>Client B Channel &rarr; HTTP Goroutine B &rarr; SSE &rarr; Browser Tab 2</code></p>
+  </div>
+
+  <h3>Senior Safeguard: The Non-Blocking Send</h3>
+  <p>What happens if Client A is on a slow 3G connection and stops reading? If you do a normal send (<code>ch &lt;- event</code>), your entire worker pool will <strong>block and freeze</strong> waiting for Client A!</p>
+  <p>In production Go, you always protect the server with a non-blocking channel send:</p>
+  <pre><code>select {
+case ch <- event: // Sent successfully!
+default:          // Client buffer is full! Drop the message so the server stays fast!
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/event/hub.go"><code>internal/event/hub.go</code></a>:
+        <ul>
+          <li>Define <code>type OrderEvent struct { OrderID domain.OrderID; Status domain.OrderStatus; Timestamp time.Time }</code>.</li>
+          <li>Define a thread-safe <code>Hub[T any]</code> with <code>Subscribe() chan T</code>, <code>Unsubscribe(ch chan T)</code>, and <code>Broadcast(event T)</code>.</li>
+          <li>Use the non-blocking <code>select { case ch &lt;- event: default: }</code> pattern in <code>Broadcast</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/event/hub_test.go"><code>internal/event/hub_test.go</code></a>:
+        <ul>
+          <li>Verify that subscribers receive broadcasted events.</li>
+          <li>Verify that a full subscriber channel does not block <code>Broadcast</code>!</li>
+        </ul>
+      </li>
+      <li>Add the SSE route in <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/handler.go"><code>internal/http/handler.go</code></a>:
+        <ul>
+          <li><code>GET /api/events</code></li>
+          <li>Set headers: <code>Content-Type: text/event-stream</code>, <code>Cache-Control: no-cache</code>, <code>Connection: keep-alive</code>.</li>
+          <li>Subscribe to the hub, stream incoming events using <code>fmt.Fprintf</code> + <code>flusher.Flush()</code>, and unsubscribe when <code>&lt;-r.Context().Done()</code> fires!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0032-benchmarking-escape-analysis-and-sync-pool.html">Previous: Lesson 0032</a> | Reference: <a href="../reference/0006-io-writer-and-streaming.html">Reference 0006: io.Writer & Streaming</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

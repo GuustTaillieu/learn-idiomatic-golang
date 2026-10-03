@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: io.Writer, Streaming & Channel Pub-Sub Hub</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: io.Writer, Streaming & Channel Pub-Sub Hub</h1>
+  <p><em>The fundamental building blocks of real-time I/O, streaming protocols, and channel broadcast architectures in Go.</em></p>
+
+  <div class="callout">
+    <strong>The Core I/O Abstraction:</strong>
+    <p>Go's entire I/O ecosystem revolves around one single interface:</p>
+    <pre><code>type Writer interface {
+    Write(p []byte) (n int, err error)
+}</code></pre>
+    <p>Because <code>http.ResponseWriter</code>, <code>os.Stdout</code>, <code>bytes.Buffer</code>, and <code>net.Conn</code> all implement <code>io.Writer</code>, you can stream data to any destination without changing your core logic.</p>
+  </div>
+
+  <h2>1. Server-Sent Events (SSE) with <code>http.Flusher</code></h2>
+  <p>SSE is pure HTTP. It keeps the TCP connection open and streams text frames formatted as <code>data: &lt;payload&gt;\n\n</code>.</p>
+
+  <pre><code>func handleEvents(w http.ResponseWriter, r *http.Request) {
+    // 1. Mandatory SSE headers
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+
+    // 2. Type-assert the http.Flusher interface
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+        return
+    }
+
+    // 3. Stream frames as they happen
+    for {
+        select {
+        case <-r.Context().Done(): // Client closed the tab/connection
+            return
+        case event := <-clientChan:
+            // Write to io.Writer
+            fmt.Fprintf(w, "data: %s\n\n", event.JSON())
+            // Flush immediately to the wire
+            flusher.Flush()
+        }
+    }
+}</code></pre>
+
+  <h2>2. The Channel Broker / Pub-Sub Hub Pattern</h2>
+  <p>How to safely broadcast events to 1 to 10,000 concurrent HTTP clients without race conditions or memory leaks:</p>
+
+  <pre><code>type Hub[T any] struct {
+    mu          sync.RWMutex
+    subscribers map[chan T]struct{}
+}
+
+func NewHub[T any]() *Hub[T] {
+    return &Hub[T]{
+        subscribers: make(map[chan T]struct{}),
+    }
+}
+
+func (h *Hub[T]) Subscribe() chan T {
+    h.mu.Lock()
+    defer h.mu.Unlock()
+    ch := make(chan T, 16) // Buffered to handle small bursts
+    h.subscribers[ch] = struct{}{}
+    return ch
+}
+
+func (h *Hub[T]) Unsubscribe(ch chan T) {
+    h.mu.Lock()
+    defer h.mu.Unlock()
+    delete(h.subscribers, ch)
+    close(ch)
+}
+
+func (h *Hub[T]) Broadcast(event T) {
+    h.mu.RLock()
+    defer h.mu.RUnlock()
+    for ch := range h.subscribers {
+        select {
+        case ch <- event: // Sent successfully
+        default:          // Slow subscriber buffer is full; drop to protect server!
+        }
+    }
+}</code></pre>
+
+  <h2>3. Non-Blocking Sends: Protecting the Server</h2>
+  <p>In high-concurrency Go, <strong>never block on an untrusted subscriber channel</strong>:</p>
+  <pre><code>// ❌ Dangerous: One slow client with high network latency halts your entire backend worker pool!
+ch <- event 
+
+// ✅ Senior Pattern: Non-blocking send drops or logs if subscriber cannot keep up
+select {
+case ch <- event:
+default:
+    // Subscriber buffer full; skip or disconnect
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0006 | <a href="0005-benchmarking-and-zero-allocation.html">Reference 0005: Benchmarking</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

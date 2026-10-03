@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: embed.FS, Static Assets & Single-Binary Applications</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: embed.FS, Static Assets & Single-Binary Applications</h1>
+  <p><em>How senior Go engineers package full-stack applications, migrations, and assets into a single deployable machine binary.</em></p>
+
+  <div class="callout">
+    <strong>The Go Superpower:</strong>
+    <p>Go 1.16+ includes <code>embed.FS</code> in the standard library. You can compile HTML, CSS, JavaScript, and SQL migration files directly into the executable binary. No Docker volume mounts, no asset servers, zero runtime path errors.</p>
+  </div>
+
+  <h2>1. The <code>//go:embed</code> Directive</h2>
+  <pre><code>package web
+
+import (
+    "embed"
+    "io/fs"
+    "net/http"
+)
+
+//go:embed static/*
+var staticFiles embed.FS
+
+// FileServer returns an http.Handler that serves embedded static files
+func FileServer() http.Handler {
+    // Strip the "static" prefix so index.html is served at "/"
+    subFS, err := fs.Sub(staticFiles, "static")
+    if err != nil {
+        panic(err)
+    }
+    return http.FileServer(http.FS(subFS))
+}</code></pre>
+
+  <h2>2. Wiring Static Files in Modern <code>http.ServeMux</code> (Go 1.22+)</h2>
+  <pre><code>mux := http.NewServeMux()
+
+// API Routes
+mux.HandleFunc("POST /api/orders", h.createOrder)
+mux.HandleFunc("GET /api/events", h.streamEvents)
+
+// Static Frontend (Catch-all root)
+mux.Handle("GET /", web.FileServer())</code></pre>
+
+  <h2>3. Native Browser Real-Time Connection with <code>EventSource</code></h2>
+  <p>Server-Sent Events requires zero npm packages. Native JavaScript handles connection, streaming, and automatic reconnections:</p>
+
+  <pre><code>// In your embedded browser JavaScript:
+const events = new EventSource('/events');
+
+events.onmessage = (event) => {
+    const task = JSON.parse(event.data);
+    console.log("Order event received:", task);
+    updateOrderInDOM(task);
+};
+
+events.onerror = (err) => {
+    console.warn("EventSource disconnected, browser will auto-reconnect...");
+};</code></pre>
+
+  <div class="footer">
+    <p>Reference 0007 | <a href="0006-io-writer-and-streaming.html">Reference 0006: io.Writer & Streaming</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

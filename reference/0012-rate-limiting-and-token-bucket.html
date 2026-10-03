@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Rate Limiting, Backpressure & the Token Bucket Pattern</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Rate Limiting, Backpressure & the Token Bucket Pattern</h1>
+  <p><em>Protecting high-concurrency Go services from traffic spikes, database saturation, and cascading failures.</em></p>
+
+  <div class="callout">
+    <strong>The Law of Backpressure:</strong>
+    <blockquote>
+      <em>"It is far better to reject 10% of traffic instantly with HTTP 429 than to let 100% of traffic crawl to a 30-second timeout and crash your database."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. The Token Bucket Algorithm (<code>golang.org/x/time/rate</code>)</h2>
+  <div style="text-align: center; margin: 1.5rem 0;">
+    <p><code>Tokens drip at rate R (e.g. 5/sec) &rarr; Bucket capacity B (e.g. 10 burst)</code></p>
+    <p><code>Incoming Request &rarr; Takes 1 token &rarr; Allowed!</code></p>
+    <p><code>Bucket empty &rarr; Rejection (HTTP 429 Too Many Requests)</code></p>
+  </div>
+
+  <pre><code>import "golang.org/x/time/rate"
+
+// Allows 5 requests/second with a burst capacity of 10
+limiter := rate.NewLimiter(rate.Limit(5), 10)
+
+if !limiter.Allow() {
+    // Drop / return HTTP 429 immediately!
+}</code></pre>
+
+  <h2>2. Per-Client Rate Limiter with TTL Eviction</h2>
+  <p>To prevent infinite memory growth when tracking millions of client IPs, prune inactive clients periodically:</p>
+
+  <pre><code>type client struct {
+    limiter  *rate.Limiter
+    lastSeen time.Time
+}
+
+type IPRateLimiter struct {
+    mu      sync.RWMutex
+    clients map[string]*client
+    rate    rate.Limit
+    burst   int
+}
+
+func NewIPRateLimiter(r rate.Limit, b int) *IPRateLimiter {
+    i := &IPRateLimiter{
+        clients: make(map[string]*client),
+        rate:    r,
+        burst:   b,
+    }
+    // Background goroutine cleanup every 3 minutes
+    go i.cleanupLoop(3 * time.Minute)
+    return i
+}
+
+func (i *IPRateLimiter) GetLimiter(ip string) *rate.Limiter {
+    i.mu.Lock()
+    defer i.mu.Unlock()
+
+    c, exists := i.clients[ip]
+    if !exists {
+        c = &client{
+            limiter: rate.NewLimiter(i.rate, i.burst),
+        }
+        i.clients[ip] = c
+    }
+    c.lastSeen = time.Now()
+    return c.limiter
+}
+
+func (i *IPRateLimiter) cleanupLoop(interval time.Duration) {
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+    for range ticker.C {
+        i.mu.Lock()
+        for ip, c := range i.clients {
+            if time.Since(c.lastSeen) > 5*time.Minute {
+                delete(i.clients, ip)
+            }
+        }
+        i.mu.Unlock()
+    }
+}</code></pre>
+
+  <h2>3. Rate Limiting Middleware</h2>
+  <pre><code>func RateLimitMiddleware(limiter *IPRateLimiter) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+            if !limiter.GetLimiter(ip).Allow() {
+                w.Header().Set("Retry-After", "1")
+                http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+                return
+            }
+            next.ServeHTTP(w, r)
+        })
+    }
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0012 | <a href="0011-http-middleware-and-response-decorator.html">Reference 0011: HTTP Middleware</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

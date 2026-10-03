@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0040: Production Diagnostics: pprof Profiling & Goroutine Leak Hunting</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0040: Production Diagnostics: pprof Profiling & Goroutine Leak Hunting</h1>
+  <p><em>Target: Learn the ultimate weapon of senior Go engineers: diagnosing CPU spikes, heap growth, and goroutine leaks in live production software using Go's built-in <code>pprof</code>.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Rate Limiter Implementation:</strong>
+    <ul>
+      <li>🎉 <strong>Senior Cleanup Return:</strong> Returning <code>(rateLimiter *IPRateLimiter, cleanupFunc func())</code> in <code>NewIPRateLimiter</code> was a great move! It ensures the background cleaner goroutine can be stopped without leaking.</li>
+      <li>💡 <strong>Mutex as Value & Unexported Fields:</strong> In <code>IPRateLimiter</code>, you declared <code>Connections</code> as an exported field with a pointer mutex <code>mu *sync.RWMutex</code>. In Go, mutexes should be direct values (<code>mu sync.RWMutex</code>), and data protected by the mutex should be unexported (<code>connections</code>) so callers cannot bypass the lock.</li>
+      <li>💡 <strong>Middleware Order for Observability:</strong> In <code>main.go</code>, <code>RateLimitMiddleware</code> is on the outside, so 429 rejections are returned before <code>LoggingMiddleware</code> runs. Moving <code>RequestIDMiddleware</code> and <code>LoggingMiddleware</code> to the very outside ensures you can observe and log rejected 429 traffic in production!</li>
+    </ul>
+  </div>
+
+  <h2>1. The Problem: How Do You Debug Production Without Crashing?</h2>
+  <p>Imagine your Go service has been running in production for 2 weeks. Suddenly:</p>
+  <ul>
+    <li>CPU spikes to 95%.</li>
+    <li>Memory usage creeps up by 200MB every day.</li>
+    <li>Goroutine count climbs from 20 to 15,000!</li>
+  </ul>
+  <p>In other languages, you might need heavy commercial agents (Datadog, New Relic) that slow down the service. In Go, Google built the gold standard of profilers directly into the runtime: <strong><code>net/http/pprof</code></strong>.</p>
+
+  <h2>2. Exposing pprof in Modern <code>http.ServeMux</code></h2>
+  <p>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/handler.go"><code>internal/http/handler.go</code></a>, register the standard pprof handlers:</p>
+
+  <pre><code>import "net/http/pprof"
+
+// In Routes():
+mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)</code></pre>
+
+  <h2>3. How Senior Go Engineers Inspect a Running Server</h2>
+
+  <h3>A. Check All Active Goroutines (Instant Leak Check)</h3>
+  <pre><code>curl -s http://localhost:8080/debug/pprof/goroutine?debug=1</code></pre>
+  <p>Prints every active goroutine and the exact line of code where it is currently waiting! If you see 1,000 goroutines waiting on a channel send, you found your leak in 5 seconds.</p>
+
+  <h3>B. Analyze Memory Heap Allocations</h3>
+  <pre><code>go tool pprof http://localhost:8080/debug/pprof/heap</code></pre>
+  <p>Opens an interactive shell. Type <code>top10</code> to see which functions hold the most memory, or <code>list &lt;FuncName&gt;</code> to view line-by-line allocations!</p>
+
+  <h3>C. 30-Second CPU Profiling Under Load</h3>
+  <pre><code>go tool pprof http://localhost:8080/debug/pprof/profile?seconds=10</code></pre>
+  <p>Samples CPU instruction pointers across all cores to pinpoint which algorithms consume CPU.</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Polish Rate Limiter (<a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/middleware/rate_limmiting.go"><code>internal/http/middleware/rate_limmiting.go</code></a>):</strong>
+        <ul>
+          <li>Change <code>mu *sync.RWMutex</code> to direct value <code>mu sync.RWMutex</code>.</li>
+          <li>Rename exported <code>Connections</code> to unexported <code>connections</code> to enforce thread safety.</li>
+        </ul>
+      </li>
+      <li><strong>Mount pprof Endpoints (<a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/handler.go"><code>internal/http/handler.go</code></a>):</strong>
+        <ul>
+          <li>Register <code>/debug/pprof/</code> handlers in your <code>Routes()</code> method.</li>
+        </ul>
+      </li>
+      <li><strong>Test and Run:</strong>
+        <pre><code>go test -v -race ./...
+go run cmd/server/main.go</code></pre>
+      </li>
+      <li><strong>Inspect Your Live Server:</strong>
+        <ul>
+          <li>Open <code>http://localhost:8080/debug/pprof/</code> in your browser.</li>
+          <li>In your terminal, run:
+            <pre><code>curl -s http://localhost:8080/debug/pprof/goroutine?debug=1</code></pre>
+          </li>
+          <li>Identify your background worker goroutines, outbox dispatcher, rate-limiter cleaner, and SSE streaming connection!</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0039-rate-limiting-and-token-bucket.html">Previous: Lesson 0039</a> | Reference: <a href="../reference/0013-pprof-profiling-and-diagnostics.html">Reference 0013: pprof Profiling</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

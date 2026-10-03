@@ -172,18 +172,18 @@ func TestMultiProcessor_ProcessorOnlyWorksAfterRetry_ShouldFailAfterMaxRetries(t
 }
 
 type RetryableProcessor struct {
-	OrderStore domain.OrderStore
+	OrderStore domain.OrderStorer
 	FailAmount int
 }
 
-func (r *RetryableProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (r *RetryableProcessor) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
 	if order.Retries < r.FailAmount {
 		return nil, lib.ErrTransient
 	}
 	order.Amount += 5 // Simulate some processing that modifies the order
 	r.OrderStore.Save(ctx, order)
 
-	return func() error {
+	return func(context.Context) error {
 		// Rollback logic here
 		order.Amount -= 5
 		r.OrderStore.Save(ctx, order)
@@ -192,14 +192,14 @@ func (r *RetryableProcessor) Process(ctx context.Context, order *domain.Order) (
 }
 
 type ChangeAmountProcessor struct {
-	OrderStore domain.OrderStore
+	OrderStore domain.OrderStorer
 }
 
-func (f *ChangeAmountProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (f *ChangeAmountProcessor) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
 	order.Amount += 10 // Simulate some processing that modifies the order
 	f.OrderStore.Save(ctx, order)
 
-	return func() error {
+	return func(context.Context) error {
 		// Rollback logic here
 		order.Amount -= 10 // Revert the change
 		f.OrderStore.Save(ctx, order)
@@ -208,9 +208,9 @@ func (f *ChangeAmountProcessor) Process(ctx context.Context, order *domain.Order
 }
 
 type FailingProcessor struct {
-	OrderStore domain.OrderStore
+	OrderStore domain.OrderStorer
 }
 
-func (f *FailingProcessor) Process(ctx context.Context, order *domain.Order) (func() error, error) {
+func (f *FailingProcessor) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
 	return nil, fmt.Errorf("simulated processing failure for order %s", order.ID)
 }

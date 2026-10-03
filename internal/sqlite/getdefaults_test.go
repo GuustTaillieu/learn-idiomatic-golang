@@ -9,7 +9,7 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
-func getTestSQLStores(t testing.TB) (domain.ItemStore, domain.OrderStore, domain.InventoryStore) {
+func getTestSQLStores(t testing.TB) (domain.ItemStorer, domain.OrderStorer, domain.InventoryStore) {
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

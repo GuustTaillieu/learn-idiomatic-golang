@@ -6,14 +6,14 @@ import (
 )
 
 type OutboxDispatcher struct {
-	OrderStore OrderStore
-	Queue      Queuer
+	orderStore OrderStorer
+	queue      OrderQueuer
 }
 
-func NewOutboxDispatcher(orderStore OrderStore, queue Queuer) *OutboxDispatcher {
+func NewOutboxDispatcher(orderStore OrderStorer, queue OrderQueuer) *OutboxDispatcher {
 	return &OutboxDispatcher{
-		OrderStore: orderStore,
-		Queue:      queue,
+		orderStore: orderStore,
+		queue:      queue,
 	}
 }
 
@@ -34,13 +34,17 @@ func (d *OutboxDispatcher) Start(ctx context.Context, interval time.Duration) er
 }
 
 func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
-	pendingOrders, err := d.OrderStore.GetPendingOrders(ctx)
+	pendingOrders, err := d.orderStore.GetPendingOrders(ctx)
 	if err != nil {
 		return err
 	}
 
 	for _, order := range pendingOrders {
-		if err := d.Queue.Submit(ctx, order); err != nil {
+		order.Status = OrderStatusRunning
+		if err := d.orderStore.Save(ctx, order); err != nil {
+			return err
+		}
+		if err := d.queue.Submit(ctx, order); err != nil {
 			return err
 		}
 	}

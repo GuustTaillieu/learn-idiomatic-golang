@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0034: Single-Binary Applications with //go:embed & Real-Time Web Dashboards</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0034: Single-Binary Applications with //go:embed & Real-Time Web Dashboards</h1>
+  <p><em>Target: Transform your backend into a complete, self-contained single binary application that serves a live, reactive frontend dashboard using Go's <code>embed.FS</code>.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Event Hub & SSE Implementation:</strong>
+    <ul>
+      <li>🎉 <strong>Textbook Idiomatic Design:</strong> You defined <code>domain.Hub[T]</code> as an interface in the domain, and implemented it in <code>internal/event/hub.go</code>. Pure decoupling!</li>
+      <li>✨ <strong>Non-Blocking Safety:</strong> Your <code>select { case ch &lt;- event: default: }</code> prevents slow clients from freezing backend workers.</li>
+      <li>🛡️ <strong>Zero Resource Leaks:</strong> In <code>handleGetEvents</code>, <code>defer h.orderHub.Unsubscribe(subscriber)</code> cleanly unregisters channels as soon as the client disconnects!</li>
+      <li>💡 <strong>Receiver Nuance on <code>Task.MarshalJSON</code>:</strong> In <code>internal/queue/task.go</code>, <code>MarshalJSON</code> has a pointer receiver <code>(t *Task[T])</code>. For safer automatic serialization with <code>json.Marshal</code>, value receivers <code>(t Task[T])</code> are preferred on types broadcasted as values.</li>
+    </ul>
+  </div>
+
+  <h2>1. The Go Superpower: <code>//go:embed</code></h2>
+  <p>In most programming languages (Node.js, Python, Ruby), deploying a web application with a frontend requires:</p>
+  <ul>
+    <li>Installing dependencies (<code>node_modules</code>).</li>
+    <li>Configuring Nginx or reverse proxies for static assets.</li>
+    <li>Managing complex multi-stage Docker build containers and volume mounts.</li>
+  </ul>
+  <p>In Go, the standard library includes <strong><code>//go:embed</code></strong> (since Go 1.16). You can compile HTML, CSS, JavaScript, images, and SQL migrations <strong>directly into your compiled machine binary</strong>!</p>
+  <p>You can compile your app, copy the single 15MB binary to an empty Linux server, and execute it. It will serve the API, process background queues, and host the web dashboard with zero external runtime files!</p>
+
+  <h2>2. How Embedded File Serving Works</h2>
+  <pre><code>package web
+
+import (
+    "embed"
+    "io/fs"
+    "net/http"
+)
+
+//go:embed static/*
+var staticFS embed.FS
+
+func FileServer() http.Handler {
+    // Strip "static" prefix so static/index.html is served at root "/"
+    sub, err := fs.Sub(staticFS, "static")
+    if err != nil {
+        panic(err)
+    }
+    return http.FileServer(http.FS(sub))
+}</code></pre>
+
+  <h2>3. Mounting Static Files in <code>http.ServeMux</code></h2>
+  <p>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/handler.go"><code>internal/http/handler.go</code></a>, mount the embedded file server on the root path:</p>
+  <pre><code>mux := http.NewServeMux()
+
+// API Routes
+mux.HandleFunc("POST /orders", h.handleCreateorder)
+mux.HandleFunc("GET /orders/{id}", h.handleGetorder)
+mux.HandleFunc("GET /events", h.handleGetEvents)
+mux.HandleFunc("GET /healthz", h.handleHealth)
+mux.HandleFunc("GET /readyz", h.handleReady)
+
+// Embedded Web Dashboard
+mux.Handle("GET /", web.FileServer())</code></pre>
+
+  <h2>4. The Live Order Dashboard in Action</h2>
+  <p>We created a modern, dark-mode real-time dashboard in <a href="file:///home/gustavo/Documents/projects/idiomatic-go/web/static/index.html"><code>web/static/index.html</code></a>:</p>
+  <ul>
+    <li>Connects directly to your <code>GET /events</code> SSE stream using the browser's native <code>EventSource</code> API.</li>
+    <li>Features a "Submit Order" form that posts to <code>POST /orders</code>.</li>
+    <li>Renders animated cards for each task as your background workers progress from <code>PENDING &rarr; PROCESSING &rarr; COMPLETED</code> in real time!</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/http/handler.go"><code>internal/http/handler.go</code></a>:
+        <ul>
+          <li>Import <code>github.com/GuustTaillieu/idiomatic-go/web</code>.</li>
+          <li>Mount <code>mux.Handle("GET /", web.FileServer())</code>.</li>
+        </ul>
+      </li>
+      <li>Verify your tests still pass:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+      <li>Run the server:
+        <pre><code>go run cmd/server/main.go</code></pre>
+      </li>
+      <li>Open your web browser at <strong><code>http://localhost:8080</code></strong>!
+        <ul>
+          <li>Verify the status badge says <strong>"Live SSE Connected"</strong>.</li>
+          <li>Click <strong>"⚡ Dispatch to Outbox"</strong> and watch the task appear, switch to <code>PROCESSING</code>, and transition to <code>COMPLETED</code> live!</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0033-io-writer-sse-and-channel-pubsub-hub.html">Previous: Lesson 0033</a> | Reference: <a href="../reference/0007-go-embed-and-static-file-serving.html">Reference 0007: embed.FS</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0037: The Ghost Rollback Trap & context.WithoutCancel</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0037: The Ghost Rollback Trap & context.WithoutCancel</h1>
+  <p><em>Target: Prevent failed database rollbacks during timeouts, master Go 1.21's <code>context.WithoutCancel</code>, and fix mock test signatures.</em></p>
+
+  <div class="callout">
+    <strong>Brilliant Architectural Evolution:</strong>
+    <p>You noticed that database operations inside cleanup closures need a context, so you upgraded your interface in <code>internal/domain/queue.go</code> to:</p>
+    <pre><code>type Processor[T any] interface {
+    Process(ctx context.Context, item T) (cleanup func(context.Context) error, err error)
+}</code></pre>
+    <p>This was a great senior realization! But it uncovers one of Go's most notorious production concurrency traps: <strong>The Ghost Rollback</strong>.</p>
+  </div>
+
+  <h2>1. The Ghost Rollback Trap</h2>
+  <p>Imagine a customer places an order, and the payment gateway times out after 3 seconds: <code>context.DeadlineExceeded</code>.</p>
+  <p>Your pipeline detects the failure and initiates the compensating rollback:</p>
+  <pre><code>// ⚠️ Production Trap:
+if err != nil {
+    cleanup(ctx) // ctx is ALREADY CANCELLED!
+}</code></pre>
+  <p>What happens when <code>cleanup</code> executes <code>p.InventoryStore.ReleaseStock(ctx, stock)</code>?</p>
+  <ol>
+    <li><code>database/sql</code> receives <code>ctx</code>.</li>
+    <li>Before sending the SQL query to SQLite, <code>ExecContext</code> checks <code>ctx.Err()</code>.</li>
+    <li>Because <code>ctx</code> has already expired, <strong>it immediately returns <code>context canceled</code> without executing the SQL query!</strong></li>
+    <li><strong>The Result:</strong> Your rollback silently fails, inventory remains locked, and money isn't refunded!</li>
+  </ol>
+
+  <h2>2. The Fix: <code>context.WithoutCancel</code> (Go 1.21+)</h2>
+  <p>Before Go 1.21, developers were forced to choose between two bad options:</p>
+  <ul>
+    <li>Pass <code>ctx</code> &rarr; Fails with <code>context canceled</code>.</li>
+    <li>Pass <code>context.Background()</code> &rarr; Works, but loses all Request IDs, Trace IDs, and Logger context!</li>
+  </ul>
+  <p>In Go 1.21, the Go core team solved this with <strong><code>context.WithoutCancel</code></strong>:</p>
+
+  <pre><code>func executeRollback(ctx context.Context, rollback func(context.Context) error) error {
+    if rollback == nil {
+        return nil
+    }
+
+    // 1. Sever the cancellation signal while KEEPING all context values (Request ID, Logger):
+    detachedCtx := context.WithoutCancel(ctx)
+
+    // 2. Give the rollback its own dedicated, clean timeout:
+    rollbackCtx, cancel := context.WithTimeout(detachedCtx, 3*time.Second)
+    defer cancel()
+
+    // 3. The SQL queries in rollback now execute successfully!
+    return rollback(rollbackCtx)
+}</code></pre>
+
+  <h2>3. Test Suite Update</h2>
+  <p>Because you updated <code>domain.Processor[T]</code> to return <code>func(context.Context) error</code>, three mock processors in our test files need their signatures updated from <code>func() error</code> to <code>func(context.Context) error</code>:</p>
+  <ul>
+    <li><code>internal/domain/outbox_test.go</code> (in <code>fastProcessor</code>)</li>
+    <li><code>internal/queue/order_queue_test.go</code> (in <code>RetryableProcessor</code>, <code>ChangeAmountProcessor</code>, <code>FailingProcessor</code>)</li>
+    <li><code>internal/queue/queue_test.go</code> (in <code>integerProcessor</code>)</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li><strong>Update Mock Processor Signatures:</strong>
+        <ul>
+          <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/domain/outbox_test.go"><code>internal/domain/outbox_test.go</code></a>, update <code>fastProcessor.Process</code> return type to <code>(func(context.Context) error, error)</code>.</li>
+          <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/order_queue_test.go"><code>internal/queue/order_queue_test.go</code></a>, update <code>RetryableProcessor</code>, <code>ChangeAmountProcessor</code>, and <code>FailingProcessor</code> signatures to match.</li>
+          <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue_test.go"><code>internal/queue/queue_test.go</code></a>, update <code>integerProcessor.Process</code> to match.</li>
+        </ul>
+      </li>
+      <li><strong>Apply <code>context.WithoutCancel</code>:</strong>
+        <ul>
+          <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/queue.go"><code>internal/queue/queue.go</code></a> (around line 160) and <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/queue/order_queue.go"><code>internal/queue/order_queue.go</code></a> (around line 155), wrap <code>cleanup</code> using <code>context.WithoutCancel</code> and a 3-second timeout!</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+        Verify that all tests compile and pass with 0 race conditions!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0036-graceful-shutdown-and-base-context.html">Previous: Lesson 0036</a> | Reference: <a href="../reference/0010-context-without-cancel-and-compensating-transactions.html">Reference 0010: context.WithoutCancel</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
