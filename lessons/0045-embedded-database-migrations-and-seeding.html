@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0045: Embedded Database Migrations & Idempotent Seeding</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0045: Embedded Database Migrations & Idempotent Seeding</h1>
+  <p><em>Target: Eliminate scattered CREATE TABLE calls, centralize schema definitions into versioned SQL files embedded into your Go binary, and seed initial catalog data so stress tests pass 100%.</em></p>
+
+  <div class="callout">
+    <strong>Your Key Insight from Stress Testing:</strong>
+    <blockquote>
+      <em>"I didn't seed the database so all tasks fail because of insufficient stock, but that's no problem that could easily be fixed..."</em>
+    </blockquote>
+    <p>You hit a fundamental rite-of-passage in backend engineering! Right now, tables are created via individual <code>CREATE TABLE IF NOT EXISTS</code> statements scattered across:</p>
+    <ul>
+      <li><a href="../internal/sqlite/order.go"><code>internal/sqlite/order.go</code></a></li>
+      <li><a href="../internal/sqlite/inventory.go"><code>internal/sqlite/inventory.go</code></a></li>
+      <li><a href="../internal/sqlite/item.go"><code>internal/sqlite/item.go</code></a></li>
+    </ul>
+    <p>And when a fresh server starts, the database has <strong>zero items and zero stock</strong>! So every order placed by <code>cmd/stress</code> or the web dashboard naturally fails stock reservation.</p>
+  </div>
+
+  <h2>1. The Problem with Scattered DDL in Go Repositories</h2>
+  <ol>
+    <li><strong>Separation of Concerns:</strong> <code>OrderStore</code> is responsible for storing and retrieving orders (Data Manipulation / DML). It should not manage database schema creation (Data Definition / DDL).</li>
+    <li><strong>Schema Evolution:</strong> <code>CREATE TABLE IF NOT EXISTS</code> cannot add new columns, alter constraints, or migrate existing data.</li>
+    <li><strong>Circular Foreign Keys:</strong> <code>orders</code> references <code>items(id)</code>. If <code>NewOrderStore</code> runs before <code>NewItemStore</code>, table creation can fail!</li>
+  </ol>
+
+  <h2>2. The Go <code>embed.FS</code> Migration Engine</h2>
+  <p>Instead of pulling in heavy third-party migration frameworks, senior Go teams embed raw <code>.sql</code> files directly into the single binary:</p>
+  <pre><code>// internal/sqlite/migrations.go
+package sqlite
+
+import (
+    "database/sql"
+    "embed"
+    "fmt"
+    "io/fs"
+    "sort"
+)
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+func Migrate(db *sql.DB) error {
+    entries, err := fs.ReadDir(migrationFiles, "migrations")
+    if err != nil {
+        return fmt.Errorf("reading migrations directory: %w", err)
+    }
+
+    sort.Slice(entries, func(i, j int) bool {
+        return entries[i].Name() &lt; entries[j].Name()
+    })
+
+    for _, entry := range entries {
+        content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+        if err != nil {
+            return fmt.Errorf("reading migration %s: %w", entry.Name(), err)
+        }
+        if _, err := db.Exec(string(content)); err != nil {
+            return fmt.Errorf("executing migration %s: %w", entry.Name(), err)
+        }
+    }
+    return nil
+}</code></pre>
+
+  <h2>3. The Structure of Your Migrations</h2>
+  <p>Organize your database initialization in <code>internal/sqlite/migrations/</code>:</p>
+  <ul>
+    <li><code>00001_init_schema.sql</code>: Creates <code>items</code>, <code>inventory</code>, and <code>orders</code> tables with correct foreign keys and indexes.</li>
+    <li><code>00002_seed_initial_data.sql</code>: Uses <code>INSERT OR IGNORE</code> to insert item <code>00000000-0000-0000-0000-000000000001</code> ("Gopher Plushie") with 1,000 units of stock.</li>
+  </ul>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create directory <a href="../internal/sqlite/migrations/"><code>internal/sqlite/migrations/</code></a>:
+        <ul>
+          <li><code>00001_init_schema.sql</code>: Centralize the table creation for <code>items</code>, <code>inventory</code>, and <code>orders</code>.</li>
+          <li><code>00002_seed_initial_data.sql</code>: Insert the default item and 1,000 units of stock using <code>INSERT OR IGNORE</code>.</li>
+        </ul>
+      </li>
+      <li>Create <a href="../internal/sqlite/migrations.go"><code>internal/sqlite/migrations.go</code></a>:
+        <ul>
+          <li>Use <code>//go:embed migrations/*.sql</code> to embed the SQL files.</li>
+          <li>Implement <code>Migrate(db *sql.DB) error</code> to execute all migrations in sorted sequence.</li>
+        </ul>
+      </li>
+      <li>Clean up your stores:
+        <ul>
+          <li>Remove the scattered <code>CREATE TABLE IF NOT EXISTS</code> queries from <code>NewOrderStore</code>, <code>NewInventoryStore</code>, and <code>NewItemStore</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Call <code>sqlite.Migrate(db)</code> right after opening the database connection!</li>
+        </ul>
+      </li>
+      <li>Run your stress test:
+        <pre><code>go run cmd/server/main.go
+# In another terminal:
+go run cmd/stress/main.go -c 10 -n 100</code></pre>
+      </li>
+      <li>Open <a href="http://localhost:8080" target="_blank"><code>http://localhost:8080</code></a>: Watch all 100 orders succeed and complete in real time!</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0044-production-containerization-and-distroless-docker.html">Previous: Lesson 0044</a> | Reference: <a href="../reference/0018-embedded-database-migrations-and-seeding.html">Reference 0018: Database Migrations</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

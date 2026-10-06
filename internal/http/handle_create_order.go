@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
+	"github.com/GuustTaillieu/idiomatic-go/internal/telemetry"
 )
 
 type CreateorderRequest struct {
@@ -14,14 +15,21 @@ type CreateorderRequest struct {
 }
 
 func (h *Handler) handleCreateorder(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.StartSpan(r.Context(), "http.handleCreateorder")
+	defer span.End()
+
 	var req CreateorderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		respondWithError(w, r, domain.ErrValidation)
 		return
 	}
-	order := domain.NewOrder(req.ItemID, req.Amount)
-	if err := h.orderStore.Save(r.Context(), order); err != nil {
-		http.Error(w, "Failed to save order", http.StatusInternalServerError)
+	order := domain.NewOrder(req.ItemID, req.Amount, domain.WithTraceParent(telemetry.InjectTraceParent(ctx)))
+	if err := order.Validate(); err != nil {
+		respondWithError(w, r, err)
+		return
+	}
+	if err := h.orderStore.Save(ctx, order); err != nil {
+		respondWithError(w, r, err)
 		return
 	}
 

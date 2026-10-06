@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -27,7 +28,8 @@ func (h *Handler) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 			// Write to io.Writer
 			jsonData, err := event.MarshalJSON()
 			if err != nil {
-				http.Error(w, "Failed to marshal event", http.StatusInternalServerError)
+				slog.Error("Failed to marshal event", "error", err)
+				http.Error(w, "Something went wrong with sending the event", http.StatusInternalServerError)
 				return
 			}
 			fmt.Fprintf(w, "data: %s\n\n", jsonData)

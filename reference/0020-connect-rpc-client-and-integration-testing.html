@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Connect-RPC Client & Integration Testing</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Connect-RPC Client & Integration Testing</h1>
+  <p><em>How senior Go engineers consume Connect-RPC services type-safely and write lightning-fast in-memory integration tests.</em></p>
+
+  <div class="callout">
+    <strong>The RPC Client Principle:</strong>
+    <blockquote>
+      <em>"Never write ad-hoc HTTP client code with hardcoded URLs and manual JSON unmarshaling when talking to internal services. Use the generated, strongly-typed client stub with connection pooling and context propagation."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Instantiating a Connect-RPC Client</h2>
+  <pre><code>import (
+    "net/http"
+    "connectrpc.com/connect"
+    "github.com/GuustTaillieu/idiomatic-go/proto/order/v1/orderv1connect"
+    orderv1 "github.com/GuustTaillieu/idiomatic-go/proto/order/v1"
+)
+
+// 1. Create client using standard http.Client
+client := orderv1connect.NewOrderServiceClient(
+    http.DefaultClient,
+    "http://localhost:8080",
+    // Optional: connect.WithGRPC() to speak HTTP/2 binary gRPC instead of Connect
+)
+
+// 2. Execute RPC with full type safety
+req := connect.NewRequest(&amp;orderv1.CreateOrderRequest{
+    ItemId: "00000000-0000-0000-0000-000000000001",
+    Amount: 2,
+})
+
+res, err := client.CreateOrder(ctx, req)
+if err != nil {
+    // Inspect Connect canonical error codes
+    if connectErr := new(connect.Error); errors.As(err, &amp;connectErr) {
+        fmt.Println("RPC Error Code:", connectErr.Code())
+    }
+    return err
+}
+
+// Access response fields via res.Msg
+fmt.Println("Created Order ID:", res.Msg.OrderId)</code></pre>
+
+  <h2>2. In-Memory Black-Box Testing with <code>httptest.Server</code></h2>
+  <pre><code>func TestOrderRPCService_CreateAndGet(t *testing.T) {
+    // 1. Setup in-memory store and handler
+    store := memory.NewOrderStore()
+    mux := http.NewServeMux()
+    path, handler := orderv1connect.NewOrderServiceHandler(NewOrderRPCServer(store))
+    mux.Handle(path, handler)
+
+    // 2. Start real in-memory test server
+    srv := httptest.NewServer(mux)
+    defer srv.Close()
+
+    // 3. Connect client to test server URL
+    client := orderv1connect.NewOrderServiceClient(srv.Client(), srv.URL)
+
+    // 4. Test CreateOrder
+    createRes, err := client.CreateOrder(context.Background(), connect.NewRequest(&amp;orderv1.CreateOrderRequest{
+        ItemId: "00000000-0000-0000-0000-000000000001",
+        Amount: 3,
+    }))
+    if err != nil {
+        t.Fatalf("CreateOrder failed: %v", err)
+    }
+
+    // 5. Test GetOrder
+    getRes, err := client.GetOrder(context.Background(), connect.NewRequest(&amp;orderv1.GetOrderRequest{
+        OrderId: createRes.Msg.OrderId,
+    }))
+    if err != nil {
+        t.Fatalf("GetOrder failed: %v", err)
+    }
+
+    if getRes.Msg.Amount != 3 {
+        t.Errorf("Expected amount 3, got %d", getRes.Msg.Amount)
+    }
+}</code></pre>
+
+  <h2>3. Calling Connect from Browser JavaScript / Fetch</h2>
+  <pre><code>// Connect endpoints are standard POST requests!
+const response = await fetch('/order.v1.OrderService/CreateOrder', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    item_id: '00000000-0000-0000-0000-000000000001',
+    amount: 1
+  })
+});
+const data = await response.json();
+console.log('Order ID:', data.orderId);</code></pre>
+
+  <div class="footer">
+    <p>Reference 0020 | <a href="0019-protocol-buffers-and-connect-rpc.html">Reference 0019: Protocol Buffers & Connect-RPC</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

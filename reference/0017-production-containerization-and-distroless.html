@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Production Containerization & Distroless Go</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Production Containerization & Distroless Go</h1>
+  <p><em>How senior Go engineers package cloud-native binaries into minimal, zero-vulnerability container images.</em></p>
+
+  <div class="callout">
+    <strong>The Cloud-Native Go Principle:</strong>
+    <blockquote>
+      <em>"A Go production image should only contain the compiled binary, timezone data, and root CA certificates. It should not contain a shell, package manager, compiler, or OS utilities. Minimal attack surface = maximum security."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Pure Go vs CGO in Containers</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <thead>
+      <tr>
+        <th>Aspect</th>
+        <th>CGO Enabled (<code>CGO_ENABLED=1</code>)</th>
+        <th>Pure Go (<code>CGO_ENABLED=0</code>)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Dependencies</strong></td>
+        <td>Dynamically links against host <code>glibc</code> or <code>musl</code>.</td>
+        <td>100% statically linked standalone binary.</td>
+      </tr>
+      <tr>
+        <td><strong>Portability</strong></td>
+        <td>Fails to start if container base lacks matching libc.</td>
+        <td>Runs anywhere: scratch, distroless, Alpine, Debian.</td>
+      </tr>
+      <tr>
+        <td><strong>SQLite Driver</strong></td>
+        <td><code>mattn/go-sqlite3</code> (requires GCC/C toolchain).</td>
+        <td><code>modernc.org/sqlite</code> (pure Go transpiled C).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. Multi-Stage Dockerfile Blueprint</h2>
+  <pre><code># Stage 1: Build stage with full Go toolchain
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Cache dependencies first (improves build times)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code and embed files
+COPY . .
+
+# Compile static binary with symbol stripping (-s -w reduces size by ~30%)
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /app/server ./cmd/server
+
+# Stage 2: Minimal runtime image (Google Distroless non-root)
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/server /app/server
+
+# Non-root user (UID 65532) for defense-in-depth
+USER nonroot:nonroot
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/server"]</code></pre>
+
+  <h2>3. Key Flags Explained</h2>
+  <ul>
+    <li><code>CGO_ENABLED=0</code>: Produces a static ELF binary with zero dynamic library dependencies (<code>ldd</code> output: <em>not a dynamic executable</em>).</li>
+    <li><code>-ldflags="-s -w"</code>: Strips debug symbol table (<code>-s</code>) and DWARF debugging symbols (<code>-w</code>), reducing binary size by ~30-40%.</li>
+    <li><code>USER nonroot:nonroot</code>: Prevents container breakout exploits by running under unprivileged UID 65532.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Reference 0017 | <a href="0016-load-testing-and-stress-simulation.html">Reference 0016: Load Testing</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

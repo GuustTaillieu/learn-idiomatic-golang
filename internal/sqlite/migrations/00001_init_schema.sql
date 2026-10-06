@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS items (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inventory (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  FOREIGN KEY(item_id) REFERENCES items(id)
+);

@@ -135,6 +135,9 @@ func getDefaults(t *testing.T) (*sql.DB, domain.ItemStorer, domain.InventoryStor
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Failed to migrate test database: %v", err)
+	}
 
 	itemStore, err := sqlite.NewItemStore(db)
 	if err != nil {

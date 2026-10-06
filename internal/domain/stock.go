@@ -9,7 +9,11 @@ import (
 	"uuid"
 )
 
-var ErrStockNotFound = errors.New("stock not found")
+var (
+	ErrInsufficientStock = errors.Join(ErrValidation, errors.New("insufficient stock"))
+	ErrStockNotFound     = errors.Join(ErrNotFound, errors.New("stock not found"))
+	ErrStockInvalid      = errors.Join(ErrValidation, errors.New("stock is invalid"))
+)
 
 type Stock struct {
 	ID        StockID

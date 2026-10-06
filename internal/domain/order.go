@@ -10,7 +10,10 @@ import (
 	"uuid"
 )
 
-var ErrOrderNotFound = errors.New("order not found")
+var (
+	ErrOrderNotFound = errors.Join(ErrNotFound, errors.New("order not found"))
+	ErrOrderInvalid  = errors.Join(ErrValidation, errors.New("order is invalid"))
+)
 
 type OrderStatus string
 
@@ -23,13 +26,14 @@ const (
 )
 
 type Order struct {
-	ID         OrderID
-	ItemID     ItemID
-	Amount     int
-	Status     OrderStatus
-	Retries    int
-	MaxRetries int
-	CreatedAt  time.Time
+	ID          OrderID
+	ItemID      ItemID
+	Amount      int
+	Status      OrderStatus
+	Retries     int
+	MaxRetries  int
+	TraceParent string `json:"trace_parent,omitempty"`
+	CreatedAt   time.Time
 }
 
 type OrderStorer interface {
@@ -52,22 +56,39 @@ func WithOrderStatus(status OrderStatus) OrderOption {
 	}
 }
 
+func WithTraceParent(traceParent string) OrderOption {
+	return func(o *Order) {
+		o.TraceParent = traceParent
+	}
+}
+
 type OrderID uuid.UUID
 
 func NewOrder(itemID ItemID, amount int, opts ...OrderOption) *Order {
 	o := &Order{
-		ID:         OrderID(uuid.New()),
-		ItemID:     itemID,
-		Amount:     amount,
-		Status:     OrderStatusPending,
-		Retries:    0,
-		MaxRetries: 3,
-		CreatedAt:  time.Now(),
+		ID:          OrderID(uuid.New()),
+		ItemID:      itemID,
+		Amount:      amount,
+		Status:      OrderStatusPending,
+		Retries:     0,
+		MaxRetries:  3,
+		TraceParent: "",
+		CreatedAt:   time.Now(),
 	}
 	for _, fn := range opts {
 		fn(o)
 	}
 	return o
+}
+
+func (o *Order) Validate() error {
+	if o.Amount <= 0 {
+		return ErrOrderInvalid
+	}
+	if o.MaxRetries < 0 {
+		return ErrOrderInvalid
+	}
+	return nil
 }
 
 func (o *Order) MarshalJSON() ([]byte, error) {

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Production Go System Architecture Capstone</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Production Go System Architecture Capstone</h1>
+  <p><em>The complete blueprint of the production-grade concurrent order processing system built across 50 lessons.</em></p>
+
+  <div class="callout">
+    <strong>The Hallmarks of a Senior Go Engineer:</strong>
+    <ul>
+      <li><strong>Standard Library First:</strong> Rely on Go primitives (<code>net/http</code>, <code>sync</code>, <code>context</code>, <code>log/slog</code>, <code>//go:embed</code>) before importing third-party frameworks.</li>
+      <li><strong>Explicit Over Magic:</strong> Explicit dependency injection, functional options, and clear package boundaries (Ben Johnson layout).</li>
+      <li><strong>Fault-Tolerant Concurrency:</strong> Goroutines guarded by channels, worker pools, <code>errgroup</code>, and idempotent graceful shutdown semantics.</li>
+      <li><strong>Defensive Distributed Design:</strong> Transactional Outbox pattern with Claim-Check state machines, saga compensation rollbacks, and W3C distributed trace propagation.</li>
+    </ul>
+  </div>
+
+  <h2>1. Complete Architecture Map</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <thead>
+      <tr>
+        <th>Layer</th>
+        <th>Package</th>
+        <th>Responsibility</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Domain Core</strong></td>
+        <td><code>internal/domain</code></td>
+        <td>Pure business entities (<code>Order</code>, <code>Item</code>, <code>Stock</code>), strongly-typed IDs, sentinel errors, interfaces.</td>
+      </tr>
+      <tr>
+        <td><strong>Storage &amp; Migrations</strong></td>
+        <td><code>internal/sqlite</code></td>
+        <td>Embedded SQL migrations (<code>//go:embed</code>), atomic SQLite transactions, and idempotent seeding.</td>
+      </tr>
+      <tr>
+        <td><strong>Saga Processors</strong></td>
+        <td><code>internal/processor</code></td>
+        <td>Composite sagas (<code>OrderPlacing</code>, <code>Paying</code>) with automatic rollback closures on failure.</td>
+      </tr>
+      <tr>
+        <td><strong>Asynchronous Core</strong></td>
+        <td><code>internal/queue</code>, <code>internal/domain/outbox</code></td>
+        <td>Bounded worker queues, transactional outbox polling with claim-check state machine.</td>
+      </tr>
+      <tr>
+        <td><strong>Event Streaming</strong></td>
+        <td><code>internal/event</code></td>
+        <td>Thread-safe generic Pub/Sub hub with non-blocking sends for real-time SSE streaming.</td>
+      </tr>
+      <tr>
+        <td><strong>Protocols &amp; API</strong></td>
+        <td><code>internal/http</code>, <code>proto/</code></td>
+        <td>Connect-RPC service, modern Go 1.22 <code>http.ServeMux</code>, token-bucket rate limiting, and request correlation IDs.</td>
+      </tr>
+      <tr>
+        <td><strong>Observability</strong></td>
+        <td><code>internal/telemetry</code></td>
+        <td>OpenTelemetry distributed tracing, W3C <code>traceparent</code> propagation, health probes, and live <code>pprof</code> profiling.</td>
+      </tr>
+      <tr>
+        <td><strong>Packaging</strong></td>
+        <td><code>Dockerfile</code></td>
+        <td>Multi-stage static compilation (<code>CGO_ENABLED=0</code>) running on Google Distroless (&lt;25MB).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <p>Reference 0023 | <a href="0022-asynchronous-trace-propagation.html">Reference 0022: Trace Propagation</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

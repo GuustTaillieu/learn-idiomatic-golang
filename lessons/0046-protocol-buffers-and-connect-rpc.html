@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0046: Type-Safe Distributed Contracts with Protocol Buffers & Connect-RPC</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0046: Type-Safe Distributed Contracts with Protocol Buffers & Connect-RPC</h1>
+  <p><em>Target: Move beyond fragile, handwritten REST endpoints. Define your API in Protocol Buffers, generate type-safe Go server handlers, and mount them directly to standard Go HTTP muxes using Connect-RPC.</em></p>
+
+  <div class="callout">
+    <strong>Answering Your Question:</strong>
+    <blockquote>
+      <em>"Teach me the best frontend/microservice tool to use with Go (maybe gRPC or something..?)"</em>
+    </blockquote>
+    <p>In traditional Go backends, teams used gRPC. But gRPC has a massive flaw: <strong>it does not work natively in web browsers</strong>! Standard browsers cannot send HTTP/2 trailers, forcing teams to run an Envoy reverse-proxy just to bridge React/TypeScript frontends to Go backend services.</p>
+    <p>Enter <strong>Connect-RPC</strong> (developed by Buf, endorsed by the Go community). Connect-RPC gives you the exact same schema-driven speed of gRPC and Protobuf, but it runs directly over standard HTTP/1.1 and HTTP/2 POST requests with JSON or Protobuf. Best of all: it mounts directly as a standard <code>http.Handler</code> on Go's <code>http.ServeMux</code>!</p>
+  </div>
+
+  <h2>1. Why Contract-First APIs Beat Ad-hoc REST/JSON</h2>
+  <ul>
+    <li><strong>Zero Serialization Drift:</strong> The <code>.proto</code> contract is the single source of truth. TypeScript types and Go types are generated from the exact same schema.</li>
+    <li><strong>Backward Compatibility:</strong> Protobuf tag numbers (<code>= 1</code>, <code>= 2</code>) allow non-breaking field additions and deprecations over time.</li>
+    <li><strong>Dual Protocol Support:</strong> The exact same endpoint can accept binary Protobuf from backend microservices and standard JSON from browsers and <code>curl</code>!</li>
+  </ul>
+
+  <h2>2. The Workflow</h2>
+  <ol>
+    <li>Define the service contract in <a href="../proto/order/v1/order.proto"><code>proto/order/v1/order.proto</code></a>.</li>
+    <li>Run code generation using <code>protoc</code> with <code>protoc-gen-go</code> and <code>protoc-gen-connect-go</code>.</li>
+    <li>Implement the generated Go service interface (<code>OrderServiceHandler</code>).</li>
+    <li>Mount it to your existing <a href="../internal/http/handler.go"><code>internal/http/handler.go</code></a> routes via <code>mux.Handle(path, handler)</code>.</li>
+    <li>Test it via <code>curl</code> with plain JSON or via Connect RPC!</li>
+  </ol>
+
+  <h2>3. The Proto Contract</h2>
+  <pre><code>syntax = "proto3";
+
+package order.v1;
+
+option go_package = "github.com/GuustTaillieu/idiomatic-go/proto/order/v1;orderv1";
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+
+message CreateOrderRequest {
+  string item_id = 1;
+  int32 amount = 2;
+}
+
+message CreateOrderResponse {
+  string order_id = 1;
+  string status = 2;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  string order_id = 1;
+  string item_id = 2;
+  int32 amount = 3;
+  string status = 4;
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create directory <a href="../proto/order/v1/"><code>proto/order/v1/</code></a> and write <a href="../proto/order/v1/order.proto"><code>order.proto</code></a> with the schema above.</li>
+      <li>Compile the protocol buffer contract into Go and Connect code:
+        <pre><code>protoc --go_out=. --go_opt=paths=source_relative \
+       --connect-go_out=. --connect-go_opt=paths=source_relative \
+       proto/order/v1/order.proto</code></pre>
+        <em>(Verify that <code>order.pb.go</code> and <code>order.connect.go</code> are generated!)</em>
+      </li>
+      <li>In <a href="../internal/http/order_rpc.go"><code>internal/http/order_rpc.go</code></a>:
+        <ul>
+          <li>Create an <code>OrderRPCServer</code> implementing the generated <code>OrderServiceHandler</code> interface.</li>
+          <li>Implement <code>CreateOrder</code> and <code>GetOrder</code> delegating to your <code>orderStore</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/handler.go"><code>internal/http/handler.go</code></a>:
+        <ul>
+          <li>Mount the generated Connect handler:
+            <pre><code>path, handler := orderv1connect.NewOrderServiceHandler(NewOrderRPCServer(h.orderStore))
+mux.Handle(path, handler)</code></pre>
+          </li>
+        </ul>
+      </li>
+      <li>Run your server:
+        <pre><code>go run cmd/server/main.go</code></pre>
+      </li>
+      <li>Call your new RPC endpoint via standard <code>curl</code> with JSON:
+        <pre><code>curl -X POST http://localhost:8080/order.v1.OrderService/CreateOrder \
+     -H "Content-Type: application/json" \
+     -d '{"item_id": "00000000-0000-0000-0000-000000000001", "amount": 2}'</code></pre>
+      </li>
+      <li>Verify all tests pass:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0045-embedded-database-migrations-and-seeding.html">Previous: Lesson 0045</a> | Reference: <a href="../reference/0019-protocol-buffers-and-connect-rpc.html">Reference 0019: Connect-RPC</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

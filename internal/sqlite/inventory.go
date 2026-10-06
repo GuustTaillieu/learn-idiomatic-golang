@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
@@ -23,18 +24,6 @@ func (s *inventoryStore) getDB(ctx context.Context) lib.DBTX {
 }
 
 func NewInventoryStore(db *sql.DB) (domain.InventoryStore, error) {
-	query := `
-		CREATE TABLE IF NOT EXISTS inventory (
-			id TEXT PRIMARY KEY,
-			item_id TEXT NOT NULL,
-			quantity INTEGER NOT NULL,
-			created_at DATETIME NOT NULL,
-			updated_at DATETIME NOT NULL,
-			FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
-		);`
-	if _, err := db.Exec(query); err != nil {
-		return nil, err
-	}
 	return &inventoryStore{db: db, sf: lib.Singleflight[*domain.Stock]{}}, nil
 }
 
@@ -45,14 +34,15 @@ func (s *inventoryStore) ReserveStock(ctx context.Context, stock *domain.Stock) 
 		WHERE item_id = ? AND quantity >= ?;`
 	res, err := s.getDB(ctx).ExecContext(ctx, query, stock.Quantity, stock.UpdatedAt, stock.ItemID, stock.Quantity)
 	if err != nil {
-		return err
+		slog.Error("failed to reserve stock", "error", err)
+		return domain.ErrInternal
 	}
 	rowsAff, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return domain.ErrInternal
 	}
 	if rowsAff == 0 {
-		return errors.New("insufficient stock")
+		return domain.ErrInsufficientStock
 	}
 	return nil
 }
@@ -63,7 +53,8 @@ func (s *inventoryStore) ReleaseStock(ctx context.Context, stock *domain.Stock) 
 		SET quantity = quantity + ?, updated_at = ?
 		WHERE item_id = ?;`
 	if _, err := s.getDB(ctx).ExecContext(ctx, query, stock.Quantity, stock.UpdatedAt, stock.ItemID); err != nil {
-		return err
+		slog.Error("failed to release stock", "error", err)
+		return domain.ErrInternal
 	}
 	return nil
 }
@@ -76,7 +67,7 @@ func (s *inventoryStore) AddStock(ctx context.Context, stock *domain.Stock) erro
 			quantity = quantity + excluded.quantity,
 			updated_at = ?;`
 	if _, err := s.getDB(ctx).ExecContext(ctx, query, stock.ID.String(), stock.ItemID.String(), stock.Quantity, stock.CreatedAt, stock.UpdatedAt, stock.UpdatedAt); err != nil {
-		return fmt.Errorf("failed to add stock: %w", err)
+		return domain.ErrInternal
 	}
 	return nil
 }
@@ -93,9 +84,9 @@ func (s *inventoryStore) Get(ctx context.Context, itemID domain.ItemID) (*domain
 		var stock domain.Stock
 		if err := row.Scan(&stock.ItemID, &stock.Quantity, &stock.CreatedAt, &stock.UpdatedAt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("stock not found for item_id %s: %w", itemID, err)
+				return nil, domain.ErrStockNotFound
 			}
-			return nil, fmt.Errorf("failed to get stock: %w", err)
+			return nil, domain.ErrInternal
 		}
 		return &stock, nil
 	})

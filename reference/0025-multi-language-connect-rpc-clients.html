@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Multi-Language Connect-RPC Clients (TypeScript, Rust, Kotlin)</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Multi-Language Connect-RPC Clients</h1>
+  <p><em>How modern multi-platform architectures consume a Go Connect-RPC backend from TypeScript (Web), Rust (Systems), and Kotlin (Android Jetpack Compose).</em></p>
+
+  <div class="callout">
+    <strong>The Multi-Platform Advantage:</strong>
+    <blockquote>
+      <em>"A single .proto contract generates type-safe clients across languages without writing duplicate data models. Connect-RPC endpoints simultaneously accept binary Protobuf and standard HTTP JSON on the exact same port."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. TypeScript (Web / React / Next.js)</h2>
+  <p>Using <code>@connectrpc/connect</code> and <code>@connectrpc/connect-web</code>:</p>
+  <pre><code>// 1. Install dependencies:
+// npm install @connectrpc/connect @connectrpc/connect-web @bufbuild/protobuf
+
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { OrderService } from "./gen/order/v1/order_connect";
+
+// 2. Initialize transport (points directly to Go backend, no Envoy proxy needed!)
+const transport = createConnectTransport({
+  baseUrl: "http://localhost:8080",
+});
+
+const client = createClient(OrderService, transport);
+
+// 3. Make 100% type-safe RPC call
+export async function createOrder(itemId: string, amount: number) {
+  try {
+    const res = await client.createOrder({
+      itemId: itemId,
+      amount: amount,
+    });
+    console.log("Order Created:", res.orderId, "Status:", res.status);
+    return res;
+  } catch (err) {
+    console.error("RPC Error:", err);
+    throw err;
+  }
+}</code></pre>
+
+  <h2>2. Kotlin (Android / Jetpack Compose)</h2>
+  <p>Using the official <strong>Connect-Kotlin</strong> SDK (<code>com.connectrpc:connect-kotlin</code>):</p>
+  <pre><code>// build.gradle.kts:
+// implementation("com.connectrpc:connect-kotlin:0.7.1")
+// implementation("com.connectrpc:connect-kotlin-okhttp:0.7.1")
+
+import com.connectrpc.ProtocolClientConfig
+import com.connectrpc.okhttp.ConnectOkHttpClient
+import com.connectrpc.ProtocolClient
+import okhttp3.OkHttpClient
+import order.v1.OrderServiceClient
+import order.v1.CreateOrderRequest
+
+class OrderRepository {
+    // 1. Create client using OkHttp
+    private val okHttpClient = OkHttpClient.Builder().build()
+    private val protocolClient = ProtocolClient(
+        httpClient = ConnectOkHttpClient(okHttpClient),
+        config = ProtocolClientConfig(
+            host = "http://10.0.2.2:8080", // 10.0.2.2 maps to host localhost from Android Emulator
+        )
+    )
+    private val client = OrderServiceClient(protocolClient)
+
+    // 2. Suspending function for Jetpack Compose ViewModel
+    suspend fun submitOrder(itemId: String, amount: Int): Result&lt;String&gt; {
+        val req = CreateOrderRequest(itemId = itemId, amount = amount)
+        val response = client.createOrder(req)
+        
+        return response.fold(
+            onSuccess = { res -&gt; Result.success(res.orderId) },
+            onFailure = { err -&gt; Result.failure(err) }
+        )
+    }
+}
+
+// 3. Jetpack Compose UI
+@Composable
+fun OrderButton(viewModel: OrderViewModel) {
+    val coroutineScope = rememberCoroutineScope()
+    Button(onClick = {
+        coroutineScope.launch {
+            viewModel.submitOrder("00000000-0000-0000-0000-000000000001", 1)
+        }
+    }) {
+        Text("⚡ Dispatch to Go Backend")
+    }
+}</code></pre>
+
+  <h2>3. Rust</h2>
+  <p>In Rust, you can consume Connect-RPC either with type-safe generated structs or via high-performance HTTP JSON:</p>
+  <pre><code>// Cargo.toml:
+// reqwest = { version = "0.12", features = ["json"] }
+// serde = { version = "1.0", features = ["derive"] }
+// tokio = { version = "1", features = ["full"] }
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize)]
+struct CreateOrderRequest {
+    item_id: String,
+    amount: i32,
+}
+
+#[derive(Deserialize, Debug)]
+struct CreateOrderResponse {
+    order_id: String,
+    status: String,
+}
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let client = reqwest::Client::new();
+
+    let req = CreateOrderRequest {
+        item_id: "00000000-0000-0000-0000-000000000001".to_string(),
+        amount: 2,
+    };
+
+    // Standard Connect POST endpoint
+    let res: CreateOrderResponse = client
+        .post("http://localhost:8080/order.v1.OrderService/CreateOrder")
+        .header("Content-Type", "application/json")
+        .json(&amp;req)
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    println!("Created Order from Rust: ID = {}, Status = {}", res.order_id, res.status);
+    Ok(())
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0025 | <a href="0024-standalone-typesafe-client-architecture.html">Reference 0024: Standalone Client</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

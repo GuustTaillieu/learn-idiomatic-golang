@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: 12-Factor Configuration & Fail-Fast Startup</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: 12-Factor Configuration & Fail-Fast Startup</h1>
+  <p><em>The senior pattern for robust, environment-driven configuration with zero external dependencies.</em></p>
+
+  <div class="callout">
+    <strong>The Fail-Fast Principle:</strong>
+    <blockquote>
+      <em>"A service must validate its entire configuration at startup before opening database connections or binding network ports. If a required value is missing or invalid, crash immediately with an actionable error message."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. The Strongly-Typed Config Struct</h2>
+  <pre><code>type Config struct {
+    Port         string
+    DatabaseURL  string
+    WorkerCount  int
+    RateLimit    float64
+    RateBurst    int
+    ShutdownTime time.Duration
+}</code></pre>
+
+  <h2>2. Loading Hierarchy (Flags &rarr; Env &rarr; Defaults)</h2>
+  <ol>
+    <li><strong>Default Values:</strong> Built into the code for instant local development (<code>go run cmd/server/main.go</code> works out of the box).</li>
+    <li><strong>Environment Variables:</strong> Read via <code>os.LookupEnv</code> (standard for Docker / Kubernetes 12-factor apps).</li>
+    <li><strong>CLI Flags:</strong> Read via <code>flag</code> package to allow command-line overrides during debugging or ad-hoc runs.</li>
+  </ol>
+
+  <h2>3. Helper for Type-Safe Environment Parsing</h2>
+  <pre><code>func getEnv(key, fallback string) string {
+    if val, ok := os.LookupEnv(key); ok && val != "" {
+        return val
+    }
+    return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+    if val, ok := os.LookupEnv(key); ok {
+        if i, err := strconv.Atoi(val); err == nil {
+            return i
+        }
+    }
+    return fallback
+}</code></pre>
+
+  <h2>4. Strict Fail-Fast Validation</h2>
+  <pre><code>func (c *Config) Validate() error {
+    if c.WorkerCount <= 0 {
+        return errors.New("WORKER_COUNT must be greater than 0")
+    }
+    if c.DatabaseURL == "" {
+        return errors.New("DATABASE_URL cannot be empty")
+    }
+    if c.RateLimit <= 0 {
+        return errors.New("RATE_LIMIT must be greater than 0")
+    }
+    return nil
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0014 | <a href="0013-pprof-profiling-and-diagnostics.html">Reference 0013: pprof Profiling</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

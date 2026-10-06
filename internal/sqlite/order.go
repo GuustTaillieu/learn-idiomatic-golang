@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
@@ -15,18 +14,6 @@ type OrderStore struct {
 }
 
 func NewOrderStore(db *sql.DB) (*OrderStore, error) {
-	query := `
-		CREATE TABLE IF NOT EXISTS orders (
-			id TEXT PRIMARY KEY,
-			item_id TEXT NOT NULL,
-			amount INTEGER NOT NULL,
-			status TEXT NOT NULL,
-			created_at DATETIME NOT NULL,
-			FOREIGN KEY(item_id) REFERENCES items(id)
-		);`
-	if _, err := db.Exec(query); err != nil {
-		return nil, fmt.Errorf("failed to create orders table: %w", err)
-	}
 	return &OrderStore{db: db}, nil
 }
 
@@ -47,7 +34,7 @@ func (s *OrderStore) Save(ctx context.Context, order *domain.Order) error {
 			status = excluded.status;`
 	_, err := s.getDB(ctx).ExecContext(ctx, query, order.ID, order.ItemID, order.Amount, order.Status, order.CreatedAt)
 	if err != nil {
-		return fmt.Errorf("failed to save order: %w", err)
+		return domain.ErrInternal
 	}
 	return nil
 }
@@ -63,7 +50,7 @@ func (s *OrderStore) Get(ctx context.Context, id domain.OrderID) (*domain.Order,
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrOrderNotFound
 		}
-		return nil, fmt.Errorf("failed to get order: %w", err)
+		return nil, domain.ErrInternal
 	}
 	return &order, nil
 }
@@ -78,7 +65,7 @@ func (s *OrderStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, err
 		LIMIT 50;`
 	rows, err := s.getDB(ctx).QueryContext(ctx, query, domain.OrderStatusPending)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get pending orders: %w", err)
+		return nil, domain.ErrInternal
 	}
 	defer rows.Close()
 
@@ -86,12 +73,12 @@ func (s *OrderStore) GetPendingOrders(ctx context.Context) ([]*domain.Order, err
 	for rows.Next() {
 		var order domain.Order
 		if err := rows.Scan(&order.ID, &order.ItemID, &order.Amount, &order.Status, &order.CreatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan order: %w", err)
+			return nil, domain.ErrInternal
 		}
 		orders = append(orders, &order)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate over orders: %w", err)
+		return nil, domain.ErrInternal
 	}
 	return orders, nil
 }

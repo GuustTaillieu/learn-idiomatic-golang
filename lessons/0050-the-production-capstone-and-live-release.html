@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0050: The Production Capstone & Live Release</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0050: The Production Capstone & Live Release</h1>
+  <p><em>Target: Celebrate the milestone! Connect the browser frontend directly to Connect-RPC, launch your complete distributed system, and run the full end-to-end production verification.</em></p>
+
+  <div class="callout">
+    <strong>Look At Where You Started vs Where You Are Now:</strong>
+    <p>When you started, you were exploring basic Go syntax and single-threaded channels. Over 50 progressive lessons, you transformed this repository into an industrial-strength, enterprise concurrent distributed engine:</p>
+    <ul>
+      <li><strong>Generic Concurrency Primitives:</strong> Bounded worker pools, channel fan-out/fan-in, rate limiting, and zero-allocation sync.Pool buffers.</li>
+      <li><strong>Fault-Tolerant Distributed Sagas:</strong> Transactional outbox with claim-check state machines and automatic compensation rollbacks.</li>
+      <li><strong>Dual-Protocol API:</strong> High-performance Server-Sent Events (SSE) streaming, modern Go 1.22 REST muxing, and schema-driven Protocol Buffers with Connect-RPC.</li>
+      <li><strong>Enterprise Observability:</strong> Structured contextual logging (<code>slog</code>), correlation IDs, live <code>pprof</code> profiling, and OpenTelemetry W3C distributed tracing across asynchronous boundaries.</li>
+      <li><strong>Cloud-Native Deployment:</strong> Multi-stage distroless containerization with a sub-25MB footprint and 100% test coverage with zero data races.</li>
+    </ul>
+  </div>
+
+  <h2>1. The Final Wire: Connecting the Dashboard to Connect-RPC</h2>
+  <p>In <a href="../web/static/index.html"><code>web/static/index.html</code></a>, notice how the browser dispatches orders today:</p>
+  <pre><code>const res = await fetch('/orders', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({item_id: itemId, amount: amount})
+});</code></pre>
+  <p>Because Connect-RPC accepts standard JSON over HTTP POST, you can switch the URL to your generated RPC service:</p>
+  <pre><code>const res = await fetch('/order.v1.OrderService/CreateOrder', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({item_id: itemId, amount: amount})
+});
+const data = await res.json();
+console.log("Order created via Connect-RPC:", data.orderId);</code></pre>
+  <p>The exact same backend service handles browser JSON and binary microservice protobuf!</p>
+
+  <h2>2. The End-to-End Capstone Verification</h2>
+  <p>To verify the entire distributed system end-to-end:</p>
+  <ol>
+    <li><strong>Start the Server</strong>:
+      <pre><code>go run cmd/server/main.go</code></pre>
+    </li>
+    <li><strong>Open the Dashboard</strong> at <a href="http://localhost:8080" target="_blank"><code>http://localhost:8080</code></a>. Verify the SSE connection indicator glows green.</li>
+    <li><strong>Place an Order from the UI</strong>: Click "Dispatch to Outbox". Observe the real-time state transition from <code>PENDING</code> &rarr; <code>PROCESSING</code> &rarr; <code>COMPLETED</code>!</li>
+    <li><strong>Run the High-Concurrency Load Tester</strong> in another terminal:
+      <pre><code>go run cmd/stress/main.go -c 20 -n 100</code></pre>
+      Watch your Token Bucket rate limiter protect the server, and watch the dashboard stream live updates without dropping connections!</li>
+    <li><strong>Verify System Diagnostics</strong>: Visit <a href="http://localhost:8080/debug/pprof/" target="_blank"><code>http://localhost:8080/debug/pprof/</code></a> to inspect active goroutines and memory heap.</li>
+    <li><strong>Verify Unit Tests &amp; Race Detector</strong>:
+      <pre><code>go test -v -race ./...</code></pre>
+    </li>
+  </ol>
+
+  <div class="footer">
+    <p><a href="0049-asynchronous-trace-propagation-and-span-links.html">Previous: Lesson 0049</a> | Reference: <a href="../reference/0023-production-system-architecture-capstone.html">Reference 0023: Capstone Architecture</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

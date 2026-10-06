@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,9 +10,12 @@ import (
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/lib"
+	"github.com/GuustTaillieu/idiomatic-go/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
-var ErrQueueClosed = fmt.Errorf("queue is closed")
+var ErrQueueClosed = errors.Join(domain.ErrConflict, errors.New("queue is closed"))
 
 type GenericQueue[T any] struct {
 	tasks chan *Task[T]
@@ -66,6 +70,9 @@ func (q *GenericQueue[T]) Start(ctx context.Context, workerCount int) {
 func (q *GenericQueue[T]) Submit(ctx context.Context, item T) error {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
+	ctx, _ = telemetry.StartSpan(ctx, "queue.Submit", trace.WithAttributes(
+		attribute.String("item.type", fmt.Sprintf("%T", item)),
+	))
 
 	if q.closed {
 		return ErrQueueClosed

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Protocol Buffers & Connect-RPC</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Protocol Buffers & Connect-RPC</h1>
+  <p><em>The modern, browser-friendly RPC architecture for type-safe Go microservices and web frontends.</em></p>
+
+  <div class="callout">
+    <strong>The Contract-First Principle:</strong>
+    <blockquote>
+      <em>"Code written to serialize and deserialize JSON manually rots. Define your data structures and API procedures once in Protocol Buffers, and let code generators produce type-safe clients and servers."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Traditional gRPC vs Connect-RPC</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th>Traditional gRPC (<code>google.golang.org/grpc</code>)</th>
+        <th>Connect-RPC (<code>connectrpc.com/connect</code>)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Browser Support</strong></td>
+        <td>Requires Envoy proxy (browsers can't send HTTP/2 trailers).</td>
+        <td>Works natively in browsers over standard HTTP/1.1 & HTTP/2!</td>
+      </tr>
+      <tr>
+        <td><strong>Routing</strong></td>
+        <td>Requires dedicated gRPC server running on separate port or h2c multiplexer.</td>
+        <td>Mounts directly onto standard Go <code>net/http</code> and <code>http.ServeMux</code>!</td>
+      </tr>
+      <tr>
+        <td><strong>Protocols Supported</strong></td>
+        <td>gRPC only.</td>
+        <td>gRPC, gRPC-Web, and Connect (JSON & binary Protobuf) on same port!</td>
+      </tr>
+      <tr>
+        <td><strong>Tooling</strong></td>
+        <td>Requires heavyweight gRPC plugins.</td>
+        <td>Standard <code>protoc</code> or Buf CLI.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. Anatomy of a <code>.proto</code> File</h2>
+  <pre><code>syntax = "proto3";
+
+package order.v1;
+
+option go_package = "github.com/GuustTaillieu/idiomatic-go/proto/order/v1;orderv1";
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+
+message CreateOrderRequest {
+  string item_id = 1;
+  int32 amount = 2;
+}
+
+message CreateOrderResponse {
+  string order_id = 1;
+  string status = 2;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  string order_id = 1;
+  string item_id = 2;
+  int32 amount = 3;
+  string status = 4;
+}</code></pre>
+
+  <h2>3. Compiling Protobuf in Go</h2>
+  <pre><code>protoc --go_out=. --go_opt=paths=source_relative \
+       --connect-go_out=. --connect-go_opt=paths=source_relative \
+       proto/order/v1/order.proto</code></pre>
+
+  <h2>4. Implementing and Mounting a Connect Handler</h2>
+  <pre><code>type OrderServer struct {
+    store domain.OrderStorer
+}
+
+func (s *OrderServer) CreateOrder(
+    ctx context.Context,
+    req *connect.Request[orderv1.CreateOrderRequest],
+) (*connect.Response[orderv1.CreateOrderResponse], error) {
+    // Access typed payload via req.Msg
+    order := domain.NewOrder(domain.ItemID(uuid.MustParse(req.Msg.ItemId)), int(req.Msg.Amount))
+    if err := s.store.Save(ctx, order); err != nil {
+        return nil, connect.NewError(connect.CodeInternal, err)
+    }
+    return connect.NewResponse(&amp;orderv1.CreateOrderResponse{
+        OrderId: order.ID.String(),
+        Status:  string(order.Status),
+    }), nil
+}
+
+// Mounting onto standard http.ServeMux:
+path, handler := orderv1connect.NewOrderServiceHandler(&amp;OrderServer{store: store})
+mux.Handle(path, handler)</code></pre>
+
+  <div class="footer">
+    <p>Reference 0019 | <a href="0018-embedded-database-migrations-and-seeding.html">Reference 0018: Migrations</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

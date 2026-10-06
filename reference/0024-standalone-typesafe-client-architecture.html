@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Standalone Type-Safe Client Architecture</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Standalone Type-Safe Client Architecture</h1>
+  <p><em>How external services, CLI tools, and web frontends consume your backend with 100% compile-time type safety and zero internal dependencies.</em></p>
+
+  <div class="callout">
+    <strong>The Public API Boundary Rule:</strong>
+    <blockquote>
+      <em>"An external consumer must NEVER import internal packages. The public contract (proto definitions and generated client stubs) lives in a public root directory (or dedicated SDK repository), while all database, queue, and handler logic remains strictly encapsulated in internal/."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Package Boundary Enforcement in Go</h2>
+  <pre><code>├── cmd/
+│   ├── server/       # Service binary (imports internal/ + proto/)
+│   └── client/       # External standalone client (imports ONLY proto/)
+├── internal/         # STRICTLY PRIVATE (Go compiler blocks external imports)
+│   ├── domain/
+│   ├── sqlite/
+│   ├── processor/
+│   └── http/
+└── proto/            # PUBLIC CONTRACT (Available to external modules)
+    └── order/v1/
+        ├── order.proto
+        ├── order.pb.go
+        └── orderv1connect/order.connect.go</code></pre>
+
+  <h2>2. Wire Protocols: JSON vs Binary Protobuf vs gRPC</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <thead>
+      <tr>
+        <th>Protocol</th>
+        <th>Client Use Case</th>
+        <th>Wire Format</th>
+        <th>Performance</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Connect (Binary Protobuf)</strong></td>
+        <td>Go Microservices / CLI</td>
+        <td>Binary (<code>application/proto</code>)</td>
+        <td>⚡ Highest throughput, 70% smaller payloads, 0 JSON parsing overhead.</td>
+      </tr>
+      <tr>
+        <td><strong>Connect (JSON)</strong></td>
+        <td>Web Browsers (<code>fetch</code>) / <code>curl</code></td>
+        <td>JSON (<code>application/json</code>)</td>
+        <td>🔍 Human-readable, native browser compatibility with zero build steps.</td>
+      </tr>
+      <tr>
+        <td><strong>Traditional gRPC</strong></td>
+        <td>Legacy Services / Kubernetes Ingress</td>
+        <td>HTTP/2 Trailers + Binary</td>
+        <td>🔗 Full compatibility with existing gRPC load balancers and Envoy proxies.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Building the Optimized Client Stub</h2>
+  <pre><code>// Client configured with high-performance HTTP/2 transport and binary protocol
+httpClient := &amp;http.Client{
+    Timeout: 10 * time.Second,
+    Transport: &amp;http.Transport{
+        MaxIdleConns:        100,
+        MaxIdleConnsPerHost: 20,
+        IdleConnTimeout:     90 * time.Second,
+        ForceAttemptHTTP2:   true,
+    },
+}
+
+// Client imports ONLY public orderv1connect
+client := orderv1connect.NewOrderServiceClient(
+    httpClient,
+    "http://localhost:8080",
+    connect.WithProtoJSON(), // or binary by default
+)</code></pre>
+
+  <h2>4. Web Frontend (TypeScript / React) Client</h2>
+  <p>In an independent frontend repo (e.g. Next.js, Vite, React), you generate TypeScript types using <code>@bufbuild/protobuf</code>:</p>
+  <pre><code>import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { OrderService } from "./gen/order_connect";
+
+const transport = createConnectTransport({
+  baseUrl: "http://localhost:8080",
+});
+
+const client = createClient(OrderService, transport);
+
+// 100% type-safe call with autocompletion!
+const res = await client.createOrder({
+  itemId: "00000000-0000-0000-0000-000000000001",
+  amount: 2,
+});
+console.log(res.orderId);</code></pre>
+
+  <div class="footer">
+    <p>Reference 0024 | <a href="0023-production-system-architecture-capstone.html">Reference 0023: Capstone Architecture</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

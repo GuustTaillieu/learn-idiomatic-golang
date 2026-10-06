@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0041: 12-Factor Configuration & Fail-Fast Startup</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0041: 12-Factor Configuration & Fail-Fast Startup</h1>
+  <p><em>Target: Eliminate hardcoded constants, implement cloud-native 12-factor configuration using Go standard library, and build strict fail-fast validation.</em></p>
+
+  <div class="callout">
+    <strong>Look At What You've Built:</strong>
+    <p>Your service is now a complete, production-grade distributed application with a transactional outbox, parallel saga rollbacks, real-time SSE streaming, rate limiting, and live pprof diagnostics! But take a look at <code>cmd/server/main.go</code>:</p>
+    <pre><code>db, _ := sql.Open("sqlite", "file:orders.db?cache=shared&mode=rwc") // Hardcoded!
+srv.Addr = ":8080"                                                // Hardcoded!
+queue.Start(ctx, 3)                                               // Hardcoded 3 workers!</code></pre>
+    <p>In production cloud environments (Docker, Kubernetes, AWS), hardcoded settings prevent smooth deployments and multi-environment staging.</p>
+  </div>
+
+  <h2>1. Why Avoid Bloated Config Frameworks (e.g. Viper)?</h2>
+  <p>Many beginners import third-party monoliths (like Viper) that pull in 20+ transitive dependencies, add YAML/JSON reflection overhead, and increase compile times. In idiomatic Go, senior engineers use the <strong>Standard Library First</strong> approach:</p>
+  <ul>
+    <li><code>os.LookupEnv</code> / <code>os.Getenv</code> for environment variables.</li>
+    <li><code>flag</code> package for CLI arguments.</li>
+    <li>Strict struct validation before starting the runtime.</li>
+  </ul>
+
+  <h2>2. The Architecture of <code>internal/config</code></h2>
+
+  <pre><code>package config
+
+import (
+    "errors"
+    "flag"
+    "os"
+    "strconv"
+    "time"
+)
+
+type Config struct {
+    Port         string
+    DatabaseURL  string
+    WorkerCount  int
+    RateLimit    float64
+    RateBurst    int
+    ShutdownTime time.Duration
+}
+
+func Load() (*Config, error) {
+    cfg := &Config{
+        Port:         getEnv("PORT", "8080"),
+        DatabaseURL:  getEnv("DATABASE_URL", "file:orders.db?cache=shared&mode=rwc"),
+        WorkerCount:  getEnvInt("WORKER_COUNT", 3),
+        RateLimit:    getEnvFloat("RATE_LIMIT", 5.0),
+        RateBurst:    getEnvInt("RATE_BURST", 10),
+        ShutdownTime: 5 * time.Second,
+    }
+
+    // Allow CLI flag overrides (e.g. -port=9090 -workers=5)
+    flag.StringVar(&cfg.Port, "port", cfg.Port, "HTTP server port")
+    flag.IntVar(&cfg.WorkerCount, "workers", cfg.WorkerCount, "Worker pool size")
+    flag.Parse()
+
+    if err := cfg.Validate(); err != nil {
+        return nil, err
+    }
+
+    return cfg, nil
+}
+
+func (c *Config) Validate() error {
+    if c.WorkerCount <= 0 {
+        return errors.New("WORKER_COUNT must be > 0")
+    }
+    if c.Port == "" {
+        return errors.New("PORT cannot be empty")
+    }
+    return nil
+}</code></pre>
+
+  <h2>3. The Fail-Fast Startup Flow in <code>cmd/server/main.go</code></h2>
+  <pre><code>func main() {
+    cfg, err := config.Load()
+    if err != nil {
+        slog.Error("Configuration invalid, failing fast", "error", err)
+        os.Exit(1)
+    }
+
+    // Now all components are dynamically driven by cfg:
+    db, err := sql.Open("sqlite", cfg.DatabaseURL)
+    ...
+    queue.Start(ctx, cfg.WorkerCount)
+    srv.Addr = ":" + cfg.Port
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/config/config.go"><code>internal/config/config.go</code></a>:
+        <ul>
+          <li>Define <code>Config</code> struct with <code>Port</code>, <code>DatabaseURL</code>, <code>WorkerCount</code>, <code>RateLimit</code>, <code>RateBurst</code>.</li>
+          <li>Implement <code>Load() (*Config, error)</code> reading from environment variables with fallback defaults.</li>
+          <li>Implement <code>Validate() error</code> checking that workers > 0, port is not empty, and rate limit > 0.</li>
+        </ul>
+      </li>
+      <li>Create <a href="file:///home/gustavo/Documents/projects/idiomatic-go/internal/config/config_test.go"><code>internal/config/config_test.go</code></a>:
+        <ul>
+          <li>Test that defaults load correctly.</li>
+          <li>Test that invalid values (e.g. <code>WorkerCount: 0</code>) trigger a validation error!</li>
+        </ul>
+      </li>
+      <li>In <a href="file:///home/gustavo/Documents/projects/idiomatic-go/cmd/server/main.go"><code>cmd/server/main.go</code></a>:
+        <ul>
+          <li>Call <code>cfg, err := config.Load()</code> at the very beginning of <code>main()</code>.</li>
+          <li>Replace hardcoded values with fields from <code>cfg</code>.</li>
+        </ul>
+      </li>
+      <li>Run:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0040-production-profiling-pprof-and-goroutine-leaks.html">Previous: Lesson 0040</a> | Reference: <a href="../reference/0014-configuration-and-fail-fast-startup.html">Reference 0014: 12-Factor Config</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

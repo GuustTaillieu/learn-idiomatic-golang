@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Embedded Database Migrations & Idempotent Seeding</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Embedded Database Migrations & Idempotent Seeding</h1>
+  <p><em>How senior Go engineers manage database schemas, avoid scattered CREATE TABLE calls, and ensure zero-downtime schema evolution.</em></p>
+
+  <div class="callout">
+    <strong>The Database Evolution Principle:</strong>
+    <blockquote>
+      <em>"A production database schema is a versioned artifact. Schema definitions must be isolated in ordered, immutable SQL files embedded directly into the Go binary. Application stores must never execute DDL (CREATE TABLE) statements."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Why Scattered <code>CREATE TABLE IF NOT EXISTS</code> Fails in Production</h2>
+  <ul>
+    <li><strong>Race Conditions:</strong> Multiple container replicas booting at the same time can cause SQLite schema locks or PostgreSQL transaction deadlocks.</li>
+    <li><strong>No Alter/Update Path:</strong> <code>CREATE TABLE IF NOT EXISTS</code> does nothing when you need to add a column, drop an index, or rename a constraint.</li>
+    <li><strong>Tight Coupling:</strong> Repositories (like <code>OrderStore</code>) should only execute queries (DML), not alter database schemas (DDL).</li>
+  </ul>
+
+  <h2>2. The Embedded Migrations Architecture</h2>
+  <pre><code>// internal/database/migrations.go
+package database
+
+import (
+    "database/sql"
+    "embed"
+    "fmt"
+    "io/fs"
+    "sort"
+)
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+func Migrate(db *sql.DB) error {
+    entries, err := fs.ReadDir(migrationFiles, "migrations")
+    if err != nil {
+        return fmt.Errorf("reading migrations: %w", err)
+    }
+
+    // Sort to guarantee deterministic execution order (00001, 00002, ...)
+    sort.Slice(entries, func(i, j int) bool {
+        return entries[i].Name() &lt; entries[j].Name()
+    })
+
+    // Execute migrations inside a transaction
+    for _, entry := range entries {
+        content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+        if err != nil {
+            return fmt.Errorf("reading migration %s: %w", entry.Name(), err)
+        }
+        if _, err := db.Exec(string(content)); err != nil {
+            return fmt.Errorf("executing migration %s: %w", entry.Name(), err)
+        }
+    }
+    return nil
+}</code></pre>
+
+  <h2>3. Idempotent Data Seeding Pattern</h2>
+  <pre><code>-- 00002_seed_initial_catalog.sql
+-- Use INSERT OR IGNORE / ON CONFLICT DO NOTHING to ensure idempotency across restarts
+INSERT OR IGNORE INTO items (id, name)
+VALUES ('00000000-0000-0000-0000-000000000001', 'Gopher Plushie');
+
+INSERT OR IGNORE INTO inventory (id, item_id, quantity, created_at, updated_at)
+VALUES (
+    '00000000-0000-0000-0000-000000000001',
+    '00000000-0000-0000-0000-000000000001',
+    1000,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+);</code></pre>
+
+  <div class="footer">
+    <p>Reference 0018 | <a href="0017-production-containerization-and-distroless.html">Reference 0017: Distroless Containers</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

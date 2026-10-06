@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: OpenTelemetry Distributed Tracing in Go</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: OpenTelemetry Distributed Tracing in Go</h1>
+  <p><em>The industry-standard observability framework for tracing requests across HTTP handlers, background worker queues, and database transactions.</em></p>
+
+  <div class="callout">
+    <strong>The Observability Golden Rule:</strong>
+    <blockquote>
+      <em>"Logs tell you what happened at a single instant in time. Metrics tell you the aggregate health of a component. Traces tell you the entire end-to-end journey of a request across goroutines, worker queues, and database queries."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Anatomy of a Trace & Spans</h2>
+  <ul>
+    <li><strong>Trace</strong>: The tree of operations triggered by a single incoming request (e.g. checkout). Identified by a unique <code>TraceID</code>.</li>
+    <li><strong>Span</strong>: A single named unit of work with a start time, duration, and status (e.g. <code>sqlite.ReserveStock</code>, <code>payment.Charge</code>). Identified by a <code>SpanID</code>.</li>
+    <li><strong>Parent/Child Relationship</strong>: Spans are linked together through Go's <code>context.Context</code>.</li>
+  </ul>
+
+  <h2>2. Starting and Ending Spans</h2>
+  <pre><code>import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/trace"
+)
+
+var tracer = otel.Tracer("order-service")
+
+func (p *OrderPlacing[T]) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
+    // 1. Start a child span from the incoming context
+    ctx, span := tracer.Start(ctx, "processor.OrderPlacing",
+        trace.WithAttributes(
+            attribute.String("order.id", order.ID.String()),
+            attribute.Int("order.amount", order.Amount),
+        ),
+    )
+    defer span.End()
+
+    // 2. Pass the enriched ctx to database operations
+    tx, err := p.db.BeginTx(ctx, nil)
+    if err != nil {
+        span.RecordError(err)
+        return nil, err
+    }
+    ...
+}</code></pre>
+
+  <h2>3. Context Propagation Across Background Goroutines</h2>
+  <p>When queuing work to an asynchronous worker pool or outbox dispatcher, the trace context must travel with the task!</p>
+  <pre><code>type Task[T any] struct {
+    ID       uuid.UUID
+    Item     T
+    TraceCtx context.Context // Preserves the originating request trace context!
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0021 | <a href="0020-connect-rpc-client-and-integration-testing.html">Reference 0020: Connect Client</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

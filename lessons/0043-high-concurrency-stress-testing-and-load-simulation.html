@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0043: High-Concurrency Stress Testing & Load Simulation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0043: High-Concurrency Stress Testing & Load Simulation</h1>
+  <p><em>Target: Put your entire architecture to the test under real load. Build a high-throughput CLI load generator in Go, verify your rate limiter (429s), and observe real-time SSE streaming under pressure.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Error Handling Implementation:</strong>
+    <p>You created a category-based error classification system using <code>errors.Join</code> and <code>errors.Is</code>. That is a fantastic mental model! Here is the senior breakdown of what was great and what to watch out for:</p>
+    <ul>
+      <li><strong>The Great:</strong> Grouping domain errors into categories (<code>ErrNotFound</code>, <code>ErrConflict</code>, etc.) is the exact architectural pattern used by gRPC canonical error codes and RFC 7807 (Problem Details). Adding <code>Order.Validate()</code> enforces invariants before database writes.</li>
+      <li><strong>Leaking HTTP into Domain:</strong> <code>ErrBadRequest</code> is an HTTP-specific concept. The domain layer doesn't know it's being invoked over HTTP—it could be a CLI tool, gRPC service, or event consumer! Prefer domain terms like <code>ErrValidation</code> or <code>ErrInvalid</code>.</li>
+      <li><strong>The <code>errors.Unwrap</code> Trap:</strong> In <code>respondWithError</code>, you called <code>errors.Unwrap(err)</code> before checking <code>errors.Is(err, ...)</code>. <code>errors.Is</code> <em>already</em> walks the entire error chain recursively! Furthermore, <code>errors.Unwrap</code> returns <code>nil</code> on errors created with <code>errors.Join</code> (because joined errors implement <code>Unwrap() []error</code>, not <code>Unwrap() error</code>).</li>
+      <li><strong>The Double-Logging Anti-Pattern:</strong> In <code>internal/sqlite/order.go</code>, you logged <code>slog.Error(...)</code> AND returned <code>domain.ErrInternal</code>, which then got logged a <em>second</em> time in <code>respondWithError</code>. In Go: <em>either log an error OR return it—never both.</em></li>
+      <li><strong>Context Cancellation in Queue:</strong> In <code>order_queue.go</code>, returning <code>ErrQueueClosed</code> when <code>ctx.Done()</code> fires tells the caller the queue is closed when in reality the caller's request was cancelled or timed out. Return <code>ctx.Err()</code> instead.</li>
+    </ul>
+  </div>
+
+  <h2>1. Putting Your System to the Test</h2>
+  <p>You've built an incredible system: SQLite storage, transactional outbox, worker queue, SSE streaming, rate limiting, and fail-fast configuration. But how does it behave when 200 orders arrive simultaneously?</p>
+  <p>Instead of using third-party tools like ApacheBench or k6, senior Go engineers often build custom, lightweight test harnesses using Go's first-class concurrency primitives (<code>goroutines</code>, <code>channels</code>, and <code>sync.WaitGroup</code>).</p>
+
+  <h2>2. The Architecture of <code>cmd/stress/main.go</code></h2>
+  <pre><code>package main
+
+import (
+    "bytes"
+    "context"
+    "flag"
+    "fmt"
+    "net/http"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+func main() {
+    targetURL := flag.String("url", "http://localhost:8080/orders", "Target URL")
+    concurrency := flag.Int("c", 10, "Concurrent workers")
+    totalRequests := flag.Int("n", 100, "Total requests to send")
+    flag.Parse()
+
+    // Dedicated high-throughput HTTP transport
+    client := &amp;http.Client{
+        Timeout: 5 * time.Second,
+        Transport: &amp;http.Transport{
+            MaxIdleConns:        500,
+            MaxIdleConnsPerHost: 100,
+            IdleConnTimeout:     90 * time.Second,
+        },
+    }
+
+    var (
+        successCount atomic.Int64
+        rateLimitCount atomic.Int64
+        failureCount atomic.Int64
+    )
+
+    jobs := make(chan int, *totalRequests)
+    for i := 0; i &lt; *totalRequests; i++ {
+        jobs &lt;- i
+    }
+    close(jobs)
+
+    start := time.Now()
+    var wg sync.WaitGroup
+
+    for w := 0; w &lt; *concurrency; w++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for range jobs {
+                payload := []byte(`{"item_id": "00000000-0000-0000-0000-000000000001", "amount": 1}`)
+                resp, err := client.Post(*targetURL, "application/json", bytes.NewReader(payload))
+                if err != nil {
+                    failureCount.Add(1)
+                    continue
+                }
+                resp.Body.Close()
+
+                switch resp.StatusCode {
+                case http.StatusCreated:
+                    successCount.Add(1)
+                case http.StatusTooManyRequests:
+                    rateLimitCount.Add(1)
+                default:
+                    failureCount.Add(1)
+                }
+            }
+        }()
+    }
+
+    wg.Wait()
+    duration := time.Since(start)
+
+    fmt.Printf("\n--- Load Test Summary ---\n")
+    fmt.Printf("Total Time:     %v\n", duration)
+    fmt.Printf("Success (201):  %d\n", successCount.Load())
+    fmt.Printf("Limited (429):  %d\n", rateLimitCount.Load())
+    fmt.Printf("Failed:         %d\n", failureCount.Load())
+    fmt.Printf("Throughput:     %.2f req/s\n", float64(*totalRequests)/duration.Seconds())
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="../cmd/stress/main.go"><code>cmd/stress/main.go</code></a>:
+        <ul>
+          <li>Implement the concurrent load generator above with flags for <code>-c</code> (concurrency), <code>-n</code> (total requests), and <code>-url</code>.</li>
+          <li>Use <code>atomic.Int64</code> for lock-free metrics tracking across worker goroutines.</li>
+        </ul>
+      </li>
+      <li>Start the server in a separate terminal:
+        <pre><code>go run cmd/server/main.go</code></pre>
+      </li>
+      <li>Open your browser at <a href="http://localhost:8080" target="_blank"><code>http://localhost:8080</code></a> to see the real-time SSE dashboard.</li>
+      <li>In another terminal, fire the stress test:
+        <pre><code>go run cmd/stress/main.go -c 15 -n 150</code></pre>
+      </li>
+      <li>Observe:
+        <ul>
+          <li>How many requests were accepted (201) vs rate-limited (429).</li>
+          <li>Watch the dashboard stream order processing events live via SSE.</li>
+          <li>Notice the Outbox dispatcher processing orders in the background.</li>
+        </ul>
+      </li>
+      <li>Run your test suite to ensure all unit tests continue to pass:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0042-structured-error-classification-and-boundary-translation.html">Previous: Lesson 0042</a> | Reference: <a href="../reference/0016-load-testing-and-stress-simulation.html">Reference 0016: Load Testing</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

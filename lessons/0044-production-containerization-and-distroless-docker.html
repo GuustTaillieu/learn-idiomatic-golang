@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0044: Production Containerization & Distroless Docker</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0044: Production Containerization & Distroless Docker</h1>
+  <p><em>Target: Package your single-binary Go application into an ultra-lean, zero-vulnerability container image (&lt;25MB) using multi-stage builds and Google Distroless.</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Feedback Implementation:</strong>
+    <p>You incorporated the feedback like a pro! Look at the improvements you made:</p>
+    <ul>
+      <li><strong>Domain Error Purity:</strong> Renaming to <code>ErrValidation</code> purged the HTTP-specific "Bad Request" name from the domain layer.</li>
+      <li><strong>Removed Redundant <code>errors.Unwrap</code>:</strong> Now <code>respondWithError</code> relies directly on <code>errors.Is</code>, preserving multi-error trees from <code>errors.Join</code>.</li>
+      <li><strong>Double Logging Eliminated:</strong> Cleaned up duplicate <code>slog.Error</code> calls across SQLite stores.</li>
+      <li><strong>Lock-Free Stress Tool:</strong> <code>cmd/stress/main.go</code> with atomic counters, pooled HTTP transport, and the <code>-item</code> flag is clean, fast, and idiomatic!</li>
+    </ul>
+  </div>
+
+  <h2>1. Why Most Dockerfiles in Go Are Bad</h2>
+  <p>Many developers package Go apps like Node or Python apps:</p>
+  <pre><code># THE BAD JUNIOR DOCKERFILE:
+FROM golang:1.24
+COPY . .
+RUN go build -o server ./cmd/server
+CMD ["./server"]
+# RESULT: 1.2 GB image containing git, gcc, bash, package managers, and 500+ CVE vulnerabilities!</code></pre>
+  <p>In Go, the compiler produces a standalone machine code binary. The container doesn't need Go, bash, apt, or curl to run it!</p>
+
+  <h2>2. The Distroless Advantage</h2>
+  <p><strong>Google Distroless</strong> (<code>gcr.io/distroless/static-debian12:nonroot</code>) contains <em>only</em> what a static Go binary needs: CA root certificates (for HTTPS outbound requests) and basic timezone data. It has:</p>
+  <ul>
+    <li>No package manager (<code>apt</code>, <code>apk</code>) &rarr; Attackers cannot install tools.</li>
+    <li>No shell (<code>/bin/sh</code>, <code>/bin/bash</code>) &rarr; Prevents remote command injection shells.</li>
+    <li>Runs as <code>nonroot:nonroot</code> (UID 65532) &rarr; Zero root privileges inside the container.</li>
+    <li>Total image size: <strong>~20 MB</strong>!</li>
+  </ul>
+
+  <h2>3. Why Pure Go SQLite (<code>modernc.org/sqlite</code>) Shines Here</h2>
+  <p>If you used <code>mattn/go-sqlite3</code>, you would need <code>gcc</code> and a C runtime (<code>libc</code>), making static compilation tricky. Because you chose <code>modernc.org/sqlite</code>, it compiles with <code>CGO_ENABLED=0</code> into a 100% statically linked binary that runs seamlessly on <code>scratch</code> or <code>distroless</code>!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="../Dockerfile"><code>Dockerfile</code></a> in the workspace root:
+        <ul>
+          <li><strong>Stage 1 (Builder)</strong>: Use <code>golang:1.24-alpine</code>, copy <code>go.mod</code>/<code>go.sum</code>, download modules, copy source, and build with <code>CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/server ./cmd/server</code>.</li>
+          <li><strong>Stage 2 (Runtime)</strong>: Use <code>gcr.io/distroless/static-debian12:nonroot</code>. Copy the binary to <code>/app/server</code>, expose port 8080, and set entrypoint.</li>
+        </ul>
+      </li>
+      <li>Create <a href="../.dockerignore"><code>.dockerignore</code></a>:
+        <ul>
+          <li>Exclude local <code>orders.db</code>, <code>.git</code>, test caches, and temporary files.</li>
+        </ul>
+      </li>
+      <li>Build your container image:
+        <pre><code>docker build -t gopher-order:latest .</code></pre>
+      </li>
+      <li>Inspect the image size:
+        <pre><code>docker images gopher-order:latest</code></pre>
+        <em>(Verify it is tiny—under 35MB!)</em>
+      </li>
+      <li>Run your containerized app:
+        <pre><code>docker run --rm -p 8080:8080 -e PORT=8080 gopher-order:latest</code></pre>
+      </li>
+      <li>In another terminal, test it with your stress tool or browser:
+        <pre><code>go run cmd/stress/main.go -c 10 -n 50</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0043-high-concurrency-stress-testing-and-load-simulation.html">Previous: Lesson 0043</a> | Reference: <a href="../reference/0017-production-containerization-and-distroless.html">Reference 0017: Distroless Containers</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

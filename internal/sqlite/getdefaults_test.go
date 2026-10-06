@@ -14,6 +14,9 @@ func getTestSQLStores(t testing.TB) (domain.ItemStorer, domain.OrderStorer, doma
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Failed to migrate test database: %v", err)
+	}
 	itemStore, err := sqlite.NewItemStore(db)
 	if err != nil {
 		t.Fatalf("Failed to create ItemSQLiteStore: %v", err)
@@ -30,6 +33,9 @@ func getTestDatabase(t testing.TB) *sql.DB {
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
+	}
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Failed to migrate test database: %v", err)
 	}
 	return db
 }

@@ -11,8 +11,10 @@ import (
 	"os/signal"
 	"time"
 
+	"golang.org/x/time/rate"
 	_ "modernc.org/sqlite"
 
+	"github.com/GuustTaillieu/idiomatic-go/internal/config"
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 	"github.com/GuustTaillieu/idiomatic-go/internal/event"
 	"github.com/GuustTaillieu/idiomatic-go/internal/health"
@@ -20,6 +22,7 @@ import (
 	"github.com/GuustTaillieu/idiomatic-go/internal/http/middleware"
 	"github.com/GuustTaillieu/idiomatic-go/internal/processor"
 	"github.com/GuustTaillieu/idiomatic-go/internal/queue"
+	"github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 	database "github.com/GuustTaillieu/idiomatic-go/internal/sqlite"
 )
 
@@ -27,12 +30,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	db, err := sql.Open("sqlite", "file:orders.db?cache=shared&mode=rwc")
+	cfg, err := config.Load(os.Args[1:]...)
+	if err != nil {
+		slog.Error("Configuration invalid, failing fast", "error", err)
+		os.Exit(1)
+	}
+
+	db, err := sql.Open("sqlite", cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("Failed to open database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
+	sqlite.Migrate(db)
 
 	orderStore, err := database.NewOrderStore(db)
 	if err != nil {
@@ -54,7 +64,7 @@ func main() {
 	healthChecker := health.NewMultiChecker(health.NewDatabaseChecker(db), queue)
 
 	// Start 3 workers
-	queue.Start(ctx, 3)
+	queue.Start(ctx, cfg.WorkerCount)
 
 	// Start the outbox dispatcher
 	go func() {
@@ -64,7 +74,7 @@ func main() {
 	}()
 
 	// Setup rate limiter
-	rateLimiter, cleanup := middleware.NewIPRateLimiter(1*time.Minute, 1, 5)
+	rateLimiter, cleanup := middleware.NewIPRateLimiter(time.Second, rate.Limit(cfg.RateLimit), cfg.RateBurst)
 	defer cleanup()
 
 	// Start HTTP server
@@ -73,7 +83,7 @@ func main() {
 	httpHandler = middleware.RequestIDMiddleware(httpHandler)
 	httpHandler = middleware.LoggingMiddleware(httpHandler)
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":" + cfg.Port,
 		Handler: httpHandler,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
@@ -89,7 +99,7 @@ func main() {
 	select {
 	case <-ctx.Done():
 		slog.Info("Shutting down server...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // 5 seconds
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTime)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Warn("Graceful shutdown timed out, closing forcefully", "error", err)

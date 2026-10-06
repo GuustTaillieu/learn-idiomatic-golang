@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0047: Type-Safe Connect-RPC Client & In-Memory Integration Testing</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0047: Type-Safe Connect-RPC Client & In-Memory Integration Testing</h1>
+  <p><em>Target: Learn how Go microservices and CLI tools talk to your Connect-RPC server. Write an end-to-end integration test with httptest.Server, and connect the web frontend!</em></p>
+
+  <div class="callout">
+    <strong>Review of Your Connect-RPC Server Implementation:</strong>
+    <p>You defined <a href="../proto/order/v1/order.proto"><code>proto/order/v1/order.proto</code></a>, compiled it with <code>protoc</code>, created <a href="../internal/http/order_rpc.go"><code>internal/http/order_rpc.go</code></a>, and mounted it onto <a href="../internal/http/handler.go"><code>internal/http/handler.go</code></a> using:</p>
+    <pre><code>osp, osh := orderv1connect.NewOrderServiceHandler(NewOrderRPCServer(h.orderStore))
+mux.Handle(osp, osh)</code></pre>
+    <p>Notice how clean this is: your RPC server is running on the <strong>exact same HTTP port (8080)</strong> alongside your REST endpoints, your SSE event stream, and your pprof diagnostics. No extra ports, no complex Envoy proxy, zero overhead!</p>
+  </div>
+
+  <h2>1. The Two Halves of RPC: Server and Client</h2>
+  <p>Building the server is only half the battle. In distributed architectures, other microservices (or worker nodes, or CLI tools) need to consume your RPC API.</p>
+  <p>Instead of manually making HTTP calls with <code>http.Post</code>, serializing JSON, and parsing status codes, Connect generated a type-safe client stub for you: <strong><code>orderv1connect.NewOrderServiceClient</code></strong>!</p>
+
+  <h2>2. Writing In-Memory Black-Box Integration Tests</h2>
+  <p>Using Go's <code>net/http/httptest</code> package, you can spin up a real in-memory HTTP server, bind your Connect handler, and make real network RPC calls via the generated client without opening external firewall ports:</p>
+  <pre><code>func TestOrderRPCService_Integration(t *testing.T) {
+    store := memory.NewOrderStore()
+    mux := http.NewServeMux()
+    path, handler := orderv1connect.NewOrderServiceHandler(NewOrderRPCServer(store))
+    mux.Handle(path, handler)
+
+    server := httptest.NewServer(mux)
+    defer server.Close()
+
+    // Create type-safe client pointing to test server
+    client := orderv1connect.NewOrderServiceClient(server.Client(), server.URL)
+
+    // Call CreateOrder
+    req := connect.NewRequest(&amp;v1.CreateOrderRequest{
+        ItemId: "00000000-0000-0000-0000-000000000001",
+        Amount: 5,
+    })
+    res, err := client.CreateOrder(context.Background(), req)
+    if err != nil {
+        t.Fatalf("CreateOrder failed: %v", err)
+    }
+
+    if res.Msg.OrderId == "" {
+        t.Fatalf("Expected non-empty OrderId")
+    }
+}</code></pre>
+
+  <h2>3. Restoring the Dashboard File Server in <code>handler.go</code></h2>
+  <p>In <a href="../internal/http/handler.go"><code>internal/http/handler.go</code></a>, you had commented out the file server. In Go 1.22+, you can simply mount:</p>
+  <pre><code>mux.Handle("/", web.FileServer())</code></pre>
+  <p>Go 1.22's mux matches the most specific prefix first. That means <code>/order.v1.OrderService/*</code> goes to Connect-RPC, <code>/orders/*</code> goes to REST, <code>/events</code> goes to SSE, and everything else routes cleanly to your embedded static web dashboard!</p>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="../internal/http/handler.go"><code>internal/http/handler.go</code></a>:
+        <ul>
+          <li>Uncomment and ensure <code>mux.Handle("/", web.FileServer())</code> is active.</li>
+        </ul>
+      </li>
+      <li>Create <a href="../internal/http/order_rpc_test.go"><code>internal/http/order_rpc_test.go</code></a>:
+        <ul>
+          <li>Write <code>TestOrderRPCServer_CreateAndGetOrder</code> using <code>httptest.NewServer</code> and <code>orderv1connect.NewOrderServiceClient</code>.</li>
+          <li>Verify that calling <code>CreateOrder</code> and then <code>GetOrder</code> succeeds with matching item and amount.</li>
+          <li>Verify that calling <code>GetOrder</code> with a non-existent ID returns a Connect error with code <code>connect.CodeNotFound</code>!</li>
+        </ul>
+      </li>
+      <li>In <a href="../cmd/stress/main.go"><code>cmd/stress/main.go</code></a> (Bonus):
+        <ul>
+          <li>Notice how <code>cmd/stress</code> can target your Connect-RPC endpoint:
+            <pre><code>http://localhost:8080/order.v1.OrderService/CreateOrder</code></pre>
+            with standard JSON <code>{"item_id": "...", "amount": 1}</code>!
+          </li>
+        </ul>
+      </li>
+      <li>Run your entire test suite:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0046-protocol-buffers-and-connect-rpc.html">Previous: Lesson 0046</a> | Reference: <a href="../reference/0020-connect-rpc-client-and-integration-testing.html">Reference 0020: Connect Client</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

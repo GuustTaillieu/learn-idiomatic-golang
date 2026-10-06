@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0042: Structured Error Classification & Boundary Translation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0042: Structured Error Classification & Boundary Translation</h1>
+  <p><em>Target: Prevent the "Everything is 404 or 500" anti-pattern. Map domain errors to standard HTTP status codes using Go 1.13+ error unwrapping, and protect internal infrastructure details.</em></p>
+
+  <div class="callout">
+    <strong>The Problem in Your Code Today:</strong>
+    <p>Take a close look at <a href="../internal/http/handle_get_order.go"><code>internal/http/handle_get_order.go</code></a>:</p>
+    <pre><code>order, err := h.orderStore.Get(r.Context(), domain.OrderID(parsedId))
+if err != nil {
+    http.Error(w, "order not found", http.StatusNotFound)
+    return
+}</code></pre>
+    <p>Notice what happens if SQLite crashes, the disk fills up, or the database connection drops: <code>orderStore.Get()</code> returns an error, and your HTTP handler tells the client <strong><code>404 Not Found</code></strong>!</p>
+    <p>In distributed systems, this is a dangerous bug: client SDKs check for 404 and conclude <em>"The order doesn't exist, let me retry creating it"</em>, leading to duplicated orders and phantom charges while your database is failing.</p>
+  </div>
+
+  <h2>1. What Caused Your Config Test Panic?</h2>
+  <p>Before fixing HTTP errors, let's understand why your configuration test panicked:</p>
+  <pre><code>panic: /tmp/go-build.../config.test flag redefined: port</code></pre>
+  <p>In Go's standard library, top-level functions like <code>flag.StringVar(...)</code> and <code>flag.Parse()</code> operate on a package-level global singleton: <strong><code>flag.CommandLine</code></strong>.</p>
+  <ul>
+    <li>When <code>TestLoad</code> ran, it registered <code>-port</code> on the global <code>flag.CommandLine</code>.</li>
+    <li>When <code>TestLoad_InvalidWorkerCount</code> ran immediately after, it called <code>Load()</code> again, which attempted to register <code>-port</code> a second time on the same global <code>FlagSet</code>. The <code>flag</code> package panics when flags are redefined!</li>
+  </ul>
+  <p>By creating an isolated <code>fs := flag.NewFlagSet("server", flag.ContinueOnError)</code> inside <code>Load(args ...string)</code>, each call to <code>Load()</code> operates on its own clean flag set without mutating global state.</p>
+
+  <h2>2. The Architecture of Boundary Error Translation</h2>
+  <p>A production web service spans multiple concentric layers:</p>
+  <ol>
+    <li><strong>Domain Layer</strong> (<code>internal/domain</code>): Defines business entities and sentinel errors (<code>ErrOrderNotFound</code>, <code>ErrInvalidOrder</code>, <code>ErrInsufficientStock</code>). Knows nothing about HTTP or SQL.</li>
+    <li><strong>Storage Layer</strong> (<code>internal/sqlite</code>): Translates driver errors (like <code>sql.ErrNoRows</code>) into domain errors (<code>domain.ErrOrderNotFound</code>) using <code>%w</code>.</li>
+    <li><strong>API / Boundary Layer</strong> (<code>internal/http</code>): Inspects errors via <code>errors.Is</code> and converts them into HTTP status codes:
+      <ul>
+        <li><code>domain.ErrOrderNotFound</code> &rarr; <code>404 Not Found</code></li>
+        <li><code>domain.ErrInvalidOrder</code> &rarr; <code>400 Bad Request</code></li>
+        <li><code>domain.ErrInsufficientStock</code> &rarr; <code>409 Conflict</code></li>
+        <li><code>context.DeadlineExceeded</code> &rarr; <code>504 Gateway Timeout</code></li>
+        <li>Unclassified errors &rarr; Logged with request ID, returns generic <code>500 Internal Server Error</code> (never leaking internal SQL queries or file paths to clients!).</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h2>3. Building the Error Responder</h2>
+  <pre><code>// internal/http/errors.go
+package http
+
+import (
+    "errors"
+    "log/slog"
+    "net/http"
+
+    "github.com/GuustTaillieu/idiomatic-go/internal/domain"
+)
+
+func respondError(w http.ResponseWriter, r *http.Request, err error) {
+    switch {
+    case errors.Is(err, domain.ErrOrderNotFound), errors.Is(err, domain.ErrItemNotFound):
+        http.Error(w, err.Error(), http.StatusNotFound)
+    case errors.Is(err, domain.ErrInvalidOrder):
+        http.Error(w, err.Error(), http.StatusBadRequest)
+    case errors.Is(err, domain.ErrInsufficientStock):
+        http.Error(w, err.Error(), http.StatusConflict)
+    default:
+        slog.ErrorContext(r.Context(), "unhandled server error", "error", err)
+        http.Error(w, "internal server error", http.StatusInternalServerError)
+    }
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>In <a href="../internal/domain/order.go"><code>internal/domain/order.go</code></a>:
+        <ul>
+          <li>Define <code>var ErrInvalidOrder = errors.New("invalid order")</code>.</li>
+          <li>Add a <code>Validate() error</code> method to <code>Order</code> checking that <code>order.Amount > 0</code> and <code>order.ItemID != ""</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/errors.go"><code>internal/http/errors.go</code></a>:
+        <ul>
+          <li>Implement <code>respondError(w http.ResponseWriter, r *http.Request, err error)</code> translating domain sentinels to appropriate status codes and logging internal 500s.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/handle_get_order.go"><code>internal/http/handle_get_order.go</code></a>:
+        <ul>
+          <li>Replace the naive <code>if err != nil { http.Error(..., 404) }</code> with <code>respondError(w, r, err)</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/handle_create_order.go"><code>internal/http/handle_create_order.go</code></a>:
+        <ul>
+          <li>Validate the order before saving: <code>if err := order.Validate(); err != nil { respondError(w, r, err); return }</code>.</li>
+          <li>If <code>orderStore.Save</code> fails, pass the error to <code>respondError(w, r, err)</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/handler_test.go"><code>internal/http/handler_test.go</code></a>:
+        <ul>
+          <li>Verify <code>POST /orders</code> with amount <code>0</code> or <code>-1</code> returns <code>400 Bad Request</code>.</li>
+          <li>Verify <code>GET /orders/{id}</code> returns <code>404</code> when the order doesn't exist, and <code>500</code> when the underlying store simulates an internal database error.</li>
+        </ul>
+      </li>
+      <li>Verify everything passes cleanly:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0041-twelve-factor-configuration-and-fail-fast-startup.html">Previous: Lesson 0041</a> | Reference: <a href="../reference/0015-structured-errors-and-api-translation.html">Reference 0015: Structured Error Translation</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

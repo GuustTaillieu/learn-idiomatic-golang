@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Structured Error Classification & Boundary Translation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Structured Error Classification & Boundary Translation</h1>
+  <p><em>How senior Go engineers translate domain, storage, and context errors across HTTP and RPC boundaries without leaking abstractions or exposing internal state.</em></p>
+
+  <div class="callout">
+    <strong>The Core Boundary Principle:</strong>
+    <blockquote>
+      <em>"Internal error details (SQL syntax, connection drops, disk failures) must never leak into client responses. Domain sentinel errors must map deterministically to standard HTTP status codes. All unclassified errors are internal (500) and must be logged with context."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Sentinel Errors vs Custom Error Types</h2>
+  <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>When To Use</th>
+        <th>Detection Method</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Sentinel Error</strong><br><code>var ErrNotFound = errors.New(...)</code></td>
+        <td>Static failure states with no extra dynamic attributes.</td>
+        <td><code>errors.Is(err, domain.ErrNotFound)</code></td>
+      </tr>
+      <tr>
+        <td><strong>Custom Error Type</strong><br><code>type ValidationError struct { Field, Message string }</code></td>
+        <td>Dynamic errors with payload details needed by caller (e.g. form fields).</td>
+        <td><code>var vErr *ValidationError<br>if errors.As(err, &amp;vErr) { ... }</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. Preserving The Error Chain (<code>%w</code> vs <code>%v</code>)</h2>
+  <pre><code>// CORRECT: Preserves causal chain for errors.Is / errors.As
+if errors.Is(err, sql.ErrNoRows) {
+    return nil, fmt.Errorf("order query: %w", domain.ErrOrderNotFound)
+}
+
+// INCORRECT: Destroys causal chain (%v turns error into plain string)
+return nil, fmt.Errorf("order query failed: %v", domain.ErrOrderNotFound)</code></pre>
+
+  <h2>3. The Leaky Abstraction Trap</h2>
+  <p>Consider this common junior anti-pattern:</p>
+  <pre><code>// ANTI-PATTERN:
+order, err := store.Get(r.Context(), id)
+if err != nil {
+    // If the database crashed or pool timed out, the client receives 404!
+    // The client falsely assumes the order does not exist and tries to recreate it.
+    http.Error(w, "not found", http.StatusNotFound)
+    return
+}</code></pre>
+
+  <h2>4. Centralized HTTP Error Translator</h2>
+  <pre><code>func RespondError(w http.ResponseWriter, r *http.Request, err error) {
+    switch {
+    case errors.Is(err, domain.ErrOrderNotFound), errors.Is(err, domain.ErrItemNotFound):
+        http.Error(w, err.Error(), http.StatusNotFound)
+
+    case errors.Is(err, domain.ErrInsufficientStock):
+        http.Error(w, err.Error(), http.StatusConflict)
+
+    case errors.Is(err, context.DeadlineExceeded):
+        http.Error(w, "request timed out", http.StatusGatewayTimeout)
+
+    case errors.Is(err, context.Canceled):
+        // Client closed connection early
+        w.WriteHeader(499)
+
+    default:
+        // Internal failure: log contextually with request ID, hide SQL/system details from caller
+        slog.ErrorContext(r.Context(), "unhandled internal server error", "error", err)
+        http.Error(w, "internal server error", http.StatusInternalServerError)
+    }
+}</code></pre>
+
+  <div class="footer">
+    <p>Reference 0015 | <a href="0014-configuration-and-fail-fast-startup.html">Reference 0014: 12-Factor Config</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

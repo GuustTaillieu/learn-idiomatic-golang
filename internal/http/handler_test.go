@@ -50,6 +50,49 @@ func TestHandler_GetOrderRoute(t *testing.T) {
 	}
 }
 
+func TestHandler_GetOrderWithInvalidUUID(t *testing.T) {
+	s := memory.NewOrderStore()
+	hc := &mockHealthChecker{}
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
+
+	req := httptest.NewRequest("GET", "/orders/non-existent-id", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected status code 400, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "bad request") {
+		t.Errorf("Expected error message to contain 'bad request', got %s", rec.Body.String())
+	}
+}
+
+func TestHandler_GetNonExistentOrder(t *testing.T) {
+	s := memory.NewOrderStore()
+	hc := &mockHealthChecker{}
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
+
+	url := fmt.Sprintf("/orders/%s", domain.NilOrderID.String())
+	req := httptest.NewRequest("GET", url, nil)
+	rec := httptest.NewRecorder()
+
+	handler.Routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status code 404, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Errorf("Expected error message to contain 'not found', got %s", rec.Body.String())
+	}
+}
+
 func TestHandler_CreateOrderRoute(t *testing.T) {
 	// Arrange
 	s := memory.NewOrderStore()
@@ -57,8 +100,8 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 	h := event.NewHub[queue.Task[*domain.Order]]()
 	handler := httpapi.NewHandler(s, hc, h)
 
-	fakeItem := domain.NewItem("payload")
-	reqBody := fmt.Sprintf(`{"item_id": "%s"}`, fakeItem.ID)
+	item := domain.NewItem("payload")
+	reqBody := fmt.Sprintf(`{"item_id": "%s", "amount": 5}`, item.ID)
 	body := strings.NewReader(reqBody)
 	req := httptest.NewRequest("POST", "/orders", body)
 	rec := httptest.NewRecorder()
@@ -76,11 +119,62 @@ func TestHandler_CreateOrderRoute(t *testing.T) {
 		t.Errorf("Failed to decode response body: %v", err)
 	}
 
-	if result.ItemID != fakeItem.ID {
-		t.Errorf("Expected order item ID %s, got %s", fakeItem.ID, result.ItemID)
+	if result.ItemID != item.ID {
+		t.Errorf("Expected order item ID %s, got %s", item.ID, result.ItemID)
 	}
 	if result.Status != domain.OrderStatusPending {
 		t.Errorf("Expected order status %s, got %s", domain.OrderStatusPending, result.Status)
+	}
+}
+
+func TestHandler_CreateOrderWithInvalidPayload(t *testing.T) {
+	// Arrange
+	s := memory.NewOrderStore()
+	hc := &mockHealthChecker{}
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
+
+	reqBody := `{"item_id": "invalid-uuid", "amount": 5}`
+	body := strings.NewReader(reqBody)
+	req := httptest.NewRequest("POST", "/orders", body)
+	rec := httptest.NewRecorder()
+
+	// Act
+	handler.Routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected status code 400, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "bad request") {
+		t.Errorf("Expected error message to contain 'bad request', got %s", rec.Body.String())
+	}
+}
+
+func TestHandler_CreateOrderWithInvalidAmount(t *testing.T) {
+	// Arrange
+	s := memory.NewOrderStore()
+	hc := &mockHealthChecker{}
+	h := event.NewHub[queue.Task[*domain.Order]]()
+	handler := httpapi.NewHandler(s, hc, h)
+
+	item := domain.NewItem("payload")
+	reqBody := fmt.Sprintf(`{"item_id": "%s", "amount": -1}`, item.ID)
+	body := strings.NewReader(reqBody)
+	req := httptest.NewRequest("POST", "/orders", body)
+	rec := httptest.NewRecorder()
+
+	// Act
+	handler.Routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected status code 400, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "bad request") {
+		t.Errorf("Expected error message to contain 'bad request', got %s", rec.Body.String())
 	}
 }
 

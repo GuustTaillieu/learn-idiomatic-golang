@@ -9,7 +9,7 @@ import (
 	"uuid"
 )
 
-var ErrItemNotFound = errors.New("item not found")
+var ErrItemNotFound = errors.Join(ErrNotFound, errors.New("item not found"))
 
 type Item struct {
 	ID        ItemID

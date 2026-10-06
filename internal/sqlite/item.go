@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/GuustTaillieu/idiomatic-go/internal/domain"
 )
@@ -13,14 +12,6 @@ type itemStore struct {
 }
 
 func NewItemStore(db *sql.DB) (domain.ItemStorer, error) {
-	query := `
-		CREATE TABLE IF NOT EXISTS items (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL
-		);`
-	if _, err := db.Exec(query); err != nil {
-		return nil, err
-	}
 	return &itemStore{db: db}, nil
 }
 
@@ -32,7 +23,7 @@ func (s *itemStore) Save(ctx context.Context, item *domain.Item) error {
 			name = excluded.name;`
 	_, err := s.db.ExecContext(ctx, query, item.ID, item.Name)
 	if err != nil {
-		return fmt.Errorf("failed to save item: %w", err)
+		return domain.ErrInternal
 	}
 	return nil
 }
@@ -48,7 +39,7 @@ func (s *itemStore) Get(ctx context.Context, id domain.ItemID) (*domain.Item, er
 		if err == sql.ErrNoRows {
 			return nil, domain.ErrItemNotFound
 		}
-		return nil, fmt.Errorf("failed to get item: %w", err)
+		return nil, domain.ErrInternal
 	}
 	return &item, nil
 }

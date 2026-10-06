@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0049: Asynchronous Trace Propagation & W3C TraceContext</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0049: Asynchronous Trace Propagation & W3C TraceContext</h1>
+  <p><em>Target: Answer your question about task context! Propagate trace IDs across the Outbox database boundary into worker goroutines using standard W3C TraceContext.</em></p>
+
+  <div class="callout">
+    <strong>Answering Your Question:</strong>
+    <blockquote>
+      <em>"If I had to do something with the task ctx then I don't know how (if it matters)?"</em>
+    </blockquote>
+    <p>It matters <strong>enormously</strong> in distributed systems! Here is why:</p>
+    <ul>
+      <li>When an order arrives via RPC or HTTP, it has a request context: <code>r.Context()</code>.</li>
+      <li>That request creates a span with a unique <code>TraceID</code>.</li>
+      <li>The order is written to SQLite and the HTTP response returns <code>201 Created</code>. The HTTP request is now <strong>finished and its context is canceled</strong>!</li>
+      <li>Moments later, the Outbox Dispatcher polls SQLite and feeds the order to your background worker pool.</li>
+    </ul>
+    <p>If the worker pool tried to use the original HTTP request context, it would immediately crash with <code>context canceled</code>! But if it uses a fresh <code>context.Background()</code>, the trace is broken and the worker's execution looks like a completely separate, anonymous task in Datadog/Jaeger.</p>
+  </div>
+
+  <h2>1. The Solution: W3C TraceParent Serialization</h2>
+  <p>In industry standards (OpenTelemetry, AWS X-Ray, Google Cloud Trace), trace identifiers are represented as a compact string called a <strong>TraceParent</strong>:</p>
+  <pre><code>00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01</code></pre>
+  <p>When the order is placed, we inject this string into the order. When the background worker picks up the order, it extracts the trace metadata into its server context! Now the worker's spans become children of the original RPC request span.</p>
+
+  <h2>2. Building the Trace Injector and Extractor</h2>
+  <pre><code>// internal/telemetry/propagation.go
+package telemetry
+
+import (
+    "context"
+    "go.opentelemetry.io/otel/propagation"
+)
+
+var propagator = propagation.TraceContext{}
+
+// InjectTraceParent writes the current span's W3C traceparent string
+func InjectTraceParent(ctx context.Context) string {
+    carrier := propagation.MapCarrier{}
+    propagator.Inject(ctx, carrier)
+    return carrier["traceparent"]
+}
+
+// ExtractTraceContext extracts the traceparent into a base context
+func ExtractTraceContext(ctx context.Context, traceParent string) context.Context {
+    if traceParent == "" {
+        return ctx
+    }
+    carrier := propagation.MapCarrier{"traceparent": traceParent}
+    return propagator.Extract(ctx, carrier)
+}</code></pre>
+
+  <h2>3. Attaching It to Domain Orders</h2>
+  <p>Add a field to <a href="../internal/domain/order.go"><code>internal/domain/order.go</code></a>:</p>
+  <pre><code>type Order struct {
+    ID          OrderID
+    ItemID      ItemID
+    Amount      int
+    Status      OrderStatus
+    TraceParent string // W3C distributed trace string!
+    ...
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="../internal/telemetry/propagation.go"><code>internal/telemetry/propagation.go</code></a>:
+        <ul>
+          <li>Implement <code>InjectTraceParent(ctx context.Context) string</code> using <code>propagation.TraceContext{}</code>.</li>
+          <li>Implement <code>ExtractTraceContext(ctx context.Context, traceParent string) context.Context</code>.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/domain/order.go"><code>internal/domain/order.go</code></a>:
+        <ul>
+          <li>Add <code>TraceParent string `json:"trace_parent,omitempty"`</code> to the <code>Order</code> struct.</li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/http/order_rpc.go"><code>internal/http/order_rpc.go</code></a>:
+        <ul>
+          <li>In <code>CreateOrder</code>, capture the trace:
+            <pre><code>order.TraceParent = telemetry.InjectTraceParent(ctx)</code></pre>
+          </li>
+        </ul>
+      </li>
+      <li>In <a href="../internal/processor/order_placing.go"><code>internal/processor/order_placing.go</code></a>:
+        <ul>
+          <li>Resume the trace inside <code>Process</code>:
+            <pre><code>ctx = telemetry.ExtractTraceContext(ctx, order.TraceParent)
+ctx, span := telemetry.StartSpan(ctx, "processor.OrderPlacing")
+defer span.End()</code></pre>
+          </li>
+        </ul>
+      </li>
+      <li>Run your test suite to verify end-to-end trace propagation with 0 data races:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0048-opentelemetry-distributed-tracing-and-spans.html">Previous: Lesson 0048</a> | Reference: <a href="../reference/0022-asynchronous-trace-propagation.html">Reference 0022: Trace Propagation</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: Asynchronous Trace Propagation & W3C TraceContext</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: Asynchronous Trace Propagation & W3C TraceContext</h1>
+  <p><em>How senior Go engineers link asynchronous background worker goroutines back to the originating HTTP/RPC request trace.</em></p>
+
+  <div class="callout">
+    <strong>The Asynchronous Context Paradox:</strong>
+    <blockquote>
+      <em>"Never pass an HTTP request context into a background goroutine or database outbox task. If the client closes the browser tab, the request context cancels, aborting the background worker! Instead, extract the W3C TraceContext string, serialize it with the task, and resume the trace using a fresh server context."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. The W3C TraceParent Format</h2>
+  <pre><code>version-trace_id-parent_id-trace_flags
+00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01</code></pre>
+  <ul>
+    <li><code>version</code>: Always <code>00</code> currently.</li>
+    <li><code>trace_id</code>: 16-byte unique identifier shared across all services and goroutines for this operation.</li>
+    <li><code>parent_id</code>: 8-byte ID of the span that enqueued the task.</li>
+    <li><code>trace_flags</code>: <code>01</code> means recorded/sampled.</li>
+  </ul>
+
+  <h2>2. Injecting Trace Context into String Metadata</h2>
+  <pre><code>import "go.opentelemetry.io/otel/propagation"
+
+func InjectTraceParent(ctx context.Context) string {
+    carrier := propagation.MapCarrier{}
+    propagation.TraceContext{}.Inject(ctx, carrier)
+    return carrier["traceparent"]
+}</code></pre>
+
+  <h2>3. Extracting and Resuming the Trace in a Worker</h2>
+  <pre><code>func ExtractTraceContext(ctx context.Context, traceParent string) context.Context {
+    if traceParent == "" {
+        return ctx
+    }
+    carrier := propagation.MapCarrier{"traceparent": traceParent}
+    return propagation.TraceContext{}.Extract(ctx, carrier)
+}</code></pre>
+
+  <h2>4. Connecting the Asynchronous Pipeline</h2>
+  <ol>
+    <li><strong>In RPC/HTTP Handler:</strong>
+      <pre><code>order.TraceParent = telemetry.InjectTraceParent(ctx)
+orderStore.Save(ctx, order)</code></pre>
+    </li>
+    <li><strong>In Background Worker:</strong>
+      <pre><code>// Use server base context so cancellation doesn't kill the worker,
+// but extract the traceparent so spans link to the originating RPC request!
+jobCtx := telemetry.ExtractTraceContext(workerCtx, order.TraceParent)
+ctx, span := telemetry.StartSpan(jobCtx, "worker.ProcessOrder")
+defer span.End()</code></pre>
+    </li>
+  </ol>
+
+  <div class="footer">
+    <p>Reference 0022 | <a href="0021-opentelemetry-distributed-tracing.html">Reference 0021: OpenTelemetry</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

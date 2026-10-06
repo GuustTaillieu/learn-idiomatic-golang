@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference: High-Concurrency Load Testing & Stress Simulation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Reference: High-Concurrency Load Testing & Stress Simulation</h1>
+  <p><em>How senior Go engineers validate distributed systems under extreme concurrency, backpressure, and resource contention.</em></p>
+
+  <div class="callout">
+    <strong>The Load Testing Mental Model:</strong>
+    <blockquote>
+      <em>"A distributed system is only as reliable as its behavior under maximum saturation. If it doesn't degrade gracefully under load, it will collapse catastrophically in production."</em>
+    </blockquote>
+  </div>
+
+  <h2>1. Anatomy of a Concurrent Go Load Generator</h2>
+  <pre><code>// Worker Pool Generator Pattern
+type LoadTester struct {
+    client      *http.Client
+    targetURL   string
+    concurrency int
+    totalReqs   int
+}
+
+func (lt *LoadTester) Run(ctx context.Context) Result {
+    jobs := make(chan int, lt.concurrency*2)
+    var wg sync.WaitGroup
+    var metrics Metrics
+
+    for i := 0; i &lt; lt.concurrency; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for id := range jobs {
+                start := time.Now()
+                statusCode, err := lt.sendRequest(ctx, id)
+                metrics.Record(time.Since(start), statusCode, err)
+            }
+        }()
+    }
+
+    // Feed work to workers
+    for i := 0; i &lt; lt.totalReqs; i++ {
+        jobs &lt;- i
+    }
+    close(jobs)
+    wg.Wait()
+    return metrics.Summary()
+}</code></pre>
+
+  <h2>2. HTTP Client Connection Reuse & Connection Leaks</h2>
+  <p>Default <code>http.DefaultClient</code> has a shared transport that allows at most 2 idle connections per host (<code>DefaultMaxIdleConnsPerHost = 2</code>). Under heavy load, requests will constantly open and close TCP sockets, causing port exhaustion (<code>TIME_WAIT</code> sockets).</p>
+  <pre><code>// Senior High-Throughput HTTP Transport
+client := &amp;http.Client{
+    Timeout: 5 * time.Second,
+    Transport: &amp;http.Transport{
+        MaxIdleConns:        1000,
+        MaxIdleConnsPerHost: 200,
+        IdleConnTimeout:     90 * time.Second,
+    },
+}</code></pre>
+
+  <h2>3. Key Metrics to Measure</h2>
+  <ul>
+    <li><strong>Throughput (RPS)</strong>: Requests successfully processed per second.</li>
+    <li><strong>Latency Percentiles (p50, p95, p99)</strong>: Tail latency under saturation.</li>
+    <li><strong>Error Rates</strong>: 429 Too Many Requests (Rate Limiter working!), 500 Internal Server Error (Database contention / locks), 504 Gateway Timeout.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Reference 0016 | <a href="0015-structured-errors-and-api-translation.html">Reference 0015: Structured Errors</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

@@ -331,7 +331,7 @@
       submitBtn.textContent = 'Submitting...';
 
       try {
-        const res = await fetch('/orders', {
+        const res = await fetch('/order.v1.OrderService/CreateOrder', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({item_id: itemId, amount: amount})

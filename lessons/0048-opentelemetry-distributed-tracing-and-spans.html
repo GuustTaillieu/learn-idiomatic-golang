@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0048: OpenTelemetry Distributed Tracing & Span Lifecycle</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0048: OpenTelemetry Distributed Tracing & Span Lifecycle</h1>
+  <p><em>Target: Master production observability. Trace requests from HTTP/Connect-RPC handlers through the transactional outbox and worker goroutines into SQLite transactions using OpenTelemetry.</em></p>
+
+  <div class="callout">
+    <strong>Why Your Dashboard Panicked (The ServeMux Precedence Trap):</strong>
+    <p>You saw this panic when restoring the file server:</p>
+    <pre><code>panic: pattern "GET /" conflicts with pattern "/order.v1.OrderService/":
+GET / matches fewer methods than /order.v1.OrderService/, but has a more general path pattern</code></pre>
+    <p>In Go 1.22+, <code>http.ServeMux</code> forbids ambiguous pattern overlaps:</p>
+    <ul>
+      <li><code>"/order.v1.OrderService/"</code> specifies <strong>no method</strong> (matches ANY method: GET, POST, OPTIONS, etc.).</li>
+      <li><code>"GET /"</code> specifies method <code>GET</code>, but its path (<code>/</code>) is more general than <code>/order.v1.OrderService/</code>!</li>
+      <li>If a <code>GET /order.v1.OrderService/foo</code> arrives, neither pattern is strictly more specific! One is more specific on method, the other is more specific on path.</li>
+    </ul>
+    <p><strong>The Fix:</strong> Register <code>mux.Handle("/", web.FileServer())</code> without the <code>"GET "</code> prefix. Now both match all methods, and <code>/order.v1.OrderService/</code> is longer than <code>/</code>, so <code>ServeMux</code> has zero ambiguity!</p>
+  </div>
+
+  <h2>1. What Is OpenTelemetry (OTel)?</h2>
+  <p>In production distributed architectures, an order lifecycle touches multiple asynchronous boundaries:</p>
+  <ol>
+    <li>An HTTP or Connect-RPC request hits the server (<code>Root Span</code>).</li>
+    <li>A SQLite transaction saves the order with status <code>PENDING</code> (<code>Child Span: db.SaveOrder</code>).</li>
+    <li>An asynchronous Outbox dispatcher polls and claims the order (<code>Span: outbox.Claim</code>).</li>
+    <li>A worker pool picks up the order and executes parallel sagas (<code>Span: processor.OrderPlacing</code> &amp; <code>Span: processor.Paying</code>).</li>
+  </ol>
+  <p>Without distributed tracing, diagnosing why an order took 2.5 seconds requires sifting through thousands of log lines across different goroutines. With OpenTelemetry, every step is linked under a single <strong>Trace ID</strong> with exact latency breakdowns!</p>
+
+  <h2>2. The OpenTelemetry Tracer Blueprint</h2>
+  <pre><code>// internal/telemetry/tracer.go
+package telemetry
+
+import (
+    "context"
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/trace"
+    "go.opentelemetry.io/otel/trace/noop"
+)
+
+var Tracer = otel.Tracer("gopher-order")
+
+// StartSpan creates a child span linked to the incoming context
+func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+    return Tracer.Start(ctx, name, opts...)
+}</code></pre>
+
+  <h2>3. Tracing Inside Your Processors</h2>
+  <pre><code>func (p *OrderPlacing[T]) Process(ctx context.Context, order *domain.Order) (func(context.Context) error, error) {
+    ctx, span := telemetry.StartSpan(ctx, "processor.OrderPlacing")
+    defer span.End()
+
+    // Pass the traced context directly to database operations!
+    tx, err := p.db.BeginTx(ctx, nil)
+    ...
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Install the core OpenTelemetry packages:
+        <pre><code>go get go.opentelemetry.io/otel go.opentelemetry.io/otel/trace</code></pre>
+      </li>
+      <li>Create <a href="../internal/telemetry/tracer.go"><code>internal/telemetry/tracer.go</code></a>:
+        <ul>
+          <li>Define a package-level tracer named <code>"gopher-order"</code>.</li>
+          <li>Export a helper function <code>StartSpan(ctx context.Context, name string) (context.Context, trace.Span)</code>.</li>
+        </ul>
+      </li>
+      <li>Instrument <a href="../internal/processor/order_placing.go"><code>internal/processor/order_placing.go</code></a>:
+        <ul>
+          <li>Start a span named <code>"processor.OrderPlacing"</code> at the beginning of <code>Process</code>.</li>
+          <li>Ensure <code>defer span.End()</code> is called.</li>
+        </ul>
+      </li>
+      <li>Instrument <a href="../internal/http/order_rpc.go"><code>internal/http/order_rpc.go</code></a>:
+        <ul>
+          <li>Start a span named <code>"rpc.CreateOrder"</code> and <code>"rpc.GetOrder"</code>.</li>
+        </ul>
+      </li>
+      <li>Run your test suite to ensure 100% pass rate with zero overhead:
+        <pre><code>go test -v -race ./...</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0047-type-safe-connect-rpc-client-and-integration-testing.html">Previous: Lesson 0047</a> | Reference: <a href="../reference/0021-opentelemetry-distributed-tracing.html">Reference 0021: OpenTelemetry</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>

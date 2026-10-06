@@ -13,12 +13,12 @@ func (h *Handler) handleGetorder(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	parsedId, err := uuid.Parse(id)
 	if err != nil {
-		http.Error(w, "invalid order ID", http.StatusBadRequest)
+		respondWithError(w, r, domain.ErrValidation)
 		return
 	}
 	order, err := h.orderStore.Get(r.Context(), domain.OrderID(parsedId))
 	if err != nil {
-		http.Error(w, "order not found", http.StatusNotFound)
+		respondWithError(w, r, err)
 		return
 	}
 	slog.Info("order retrieved", "order_id", order.ID)

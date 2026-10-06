@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesson 0051: The Standalone Type-Safe Client & Cross-Repository Contracts</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Lesson 0051: The Standalone Type-Safe Client & Cross-Repository Contracts</h1>
+  <p><em>Target: Build a standalone client that communicates with your backend in the most optimal, type-safe way—with zero dependencies on internal server code.</em></p>
+
+  <div class="callout">
+    <strong>How Distributed Systems Separate Clients From Servers:</strong>
+    <p>In enterprise engineering, clients (mobile apps, web frontends, and external microservices) must <strong>never</strong> import internal server packages like SQLite, outbox, or business sagas.</p>
+    <p>Go enforces this at compile time: any code inside an <code>internal/</code> directory is forbidden from being imported outside this module! Only the <strong>public contract</strong> in <a href="../proto/order/v1/"><code>proto/order/v1/</code></a> is exported.</p>
+  </div>
+
+  <h2>1. What Makes This the "Most Optimal & Type-Safe" Way?</h2>
+  <ol>
+    <li><strong>Binary Protobuf Wire Format:</strong>
+      Unlike JSON (which requires text serialization, quotes, and string parsing), binary Protocol Buffers pack integers and UUIDs into raw varints and bytes. It is <strong>5x–10x faster</strong> and cuts payload size by ~70%!
+    </li>
+    <li><strong>Compile-Time Type Safety:</strong>
+      If the server renames a field or changes a type, the client fails at compile-time (<code>go build</code>), not at runtime in production!
+    </li>
+    <li><strong>Zero Duplication:</strong>
+      Both the server and client share the exact same generated Go structs from <code>order.proto</code>.
+    </li>
+  </ol>
+
+  <h2>2. The Architecture of <code>cmd/client/main.go</code></h2>
+  <pre><code>package main
+
+import (
+    "context"
+    "flag"
+    "fmt"
+    "net/http"
+    "os"
+    "time"
+
+    "connectrpc.com/connect"
+    orderv1 "github.com/GuustTaillieu/idiomatic-go/proto/order/v1"
+    "github.com/GuustTaillieu/idiomatic-go/proto/order/v1/orderv1connect"
+)
+
+func main() {
+    serverURL := flag.String("url", "http://localhost:8080", "Server base URL")
+    flag.Parse()
+
+    // 1. High-performance HTTP client with connection pooling
+    httpClient := &amp;http.Client{
+        Timeout: 5 * time.Second,
+        Transport: &amp;http.Transport{
+            MaxIdleConns:        100,
+            MaxIdleConnsPerHost: 20,
+            IdleConnTimeout:     90 * time.Second,
+        },
+    }
+
+    // 2. Type-safe generated client stub (imports ZERO internal packages!)
+    client := orderv1connect.NewOrderServiceClient(httpClient, *serverURL)
+
+    // Example CreateOrder RPC
+    res, err := client.CreateOrder(context.Background(), connect.NewRequest(&amp;orderv1.CreateOrderRequest{
+        ItemId: "00000000-0000-0000-0000-000000000001",
+        Amount: 2,
+    }))
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error creating order: %v\n", err)
+        os.Exit(1)
+    }
+
+    fmt.Printf("Order Created Successfully!\nID:     %s\nStatus: %s\n", res.Msg.OrderId, res.Msg.Status)
+}</code></pre>
+
+  <div class="challenge">
+    <h3>Your Hands-On Challenge</h3>
+    <ol>
+      <li>Create <a href="../cmd/client/main.go"><code>cmd/client/main.go</code></a>:
+        <ul>
+          <li>Support two subcommands: <code>create</code> and <code>get</code>:
+            <ul>
+              <li><code>create -item &lt;id&gt; -amount &lt;n&gt;</code> &rarr; calls <code>client.CreateOrder</code>.</li>
+              <li><code>get -order &lt;id&gt;</code> &rarr; calls <code>client.GetOrder</code>.</li>
+            </ul>
+          </li>
+          <li>Verify: <strong>Check your imports!</strong> Ensure <code>cmd/client/main.go</code> imports <em>only</em> <code>proto/order/v1</code> and <code>orderv1connect</code>—zero imports from <code>internal/</code>!</li>
+        </ul>
+      </li>
+      <li>Start your server in one terminal:
+        <pre><code>go run cmd/server/main.go</code></pre>
+      </li>
+      <li>In another terminal, test creating an order using your standalone client:
+        <pre><code>go run cmd/client/main.go create -item 00000000-0000-0000-0000-000000000001 -amount 3</code></pre>
+      </li>
+      <li>Retrieve the order details using the returned Order ID:
+        <pre><code>go run cmd/client/main.go get -order &lt;ORDER_ID&gt;</code></pre>
+      </li>
+      <li>Open your browser dashboard at <a href="http://localhost:8080" target="_blank"><code>http://localhost:8080</code></a>:
+        Watch the order created by your standalone CLI client show up and complete in real time!
+      </li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    <p><a href="0050-the-production-capstone-and-live-release.html">Previous: Lesson 0050</a> | Reference: <a href="../reference/0024-standalone-typesafe-client-architecture.html">Reference 0024: Standalone Client</a> | <a href="../MISSION.md">MISSION.md</a></p>
+  </div>
+
+</body>
+</html>
