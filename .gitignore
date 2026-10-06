@@ -1,0 +1,4 @@
+idiomatic-go
+server
+*.test
+*.db
